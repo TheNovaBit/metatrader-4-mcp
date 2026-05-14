@@ -14,12 +14,12 @@ const PORT = process.env.PORT || 8080;
 
 // MT4 data directory - configure this path for your MT4 installation
 const MT4_DATA_PATH =
-  "C:\\Users\\herbe\\AppData\\Roaming\\MetaQuotes\\Terminal"; //process.env.MT4_DATA_PATH || path.join(process.env.APPDATA, 'MetaQuotes', 'Terminal');
+  process.env.MT4_DATA_PATH || "C:\\Users\\mahip\\AppData\\Roaming\\MetaQuotes\\Terminal";
 
 // MT4 installation path for MetaEditor
 const MT4_INSTALL_PATH =
   process.env.MT4_INSTALL_PATH ||
-  "C:\\Program Files (x86)\\Pepperstone MetaTrader 4\\metaeditor.exe";
+  "C:\\Program Files (x86)\\Pepperstone UK MetaTrader 4\\metaeditor.exe";
 
 // Alternative paths to try for MetaEditor
 const METAEDITOR_PATHS = MT4_INSTALL_PATH; //[process.env.MT4_INSTALL_PATH].filter(Boolean);
@@ -340,6 +340,33 @@ app.post("/api/close", async (req, res) => {
       res.json({ success: true, result: JSON.parse(result) });
     } catch (err) {
       res.json({ success: true, message: "Close command sent to MT4" });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Modify an order's SL/TP (used for physical trailing stop)
+app.post("/api/modify", async (req, res) => {
+  try {
+    const modifyCommand = {
+      action: "MODIFY_ORDER",
+      ticket: req.body.ticket,
+      stop_loss: req.body.stop_loss,
+      take_profit: req.body.take_profit,
+      timestamp: Date.now(),
+    };
+
+    await writeMT4File("modify_commands.txt", JSON.stringify(modifyCommand));
+
+    // Wait for MT4 to process
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    try {
+      const result = await readMT4File("modify_result.txt");
+      res.json({ success: true, result: JSON.parse(result) });
+    } catch (err) {
+      res.json({ success: true, message: "Modify command sent to MT4" });
     }
   } catch (error) {
     res.status(500).json({ error: error.message });

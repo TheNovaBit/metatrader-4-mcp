@@ -1089,35 +1089,35 @@ string ExtractJsonValue(string json, string key)
    string searchKey = "\"" + key + "\":";
    int startPos = StringFind(json, searchKey);
    if (startPos == -1) return "";
-   
+
    startPos += StringLen(searchKey);
-   
-   // Skip whitespace and quotes
-   while (startPos < StringLen(json) && (StringGetChar(json, startPos) == ' ' || StringGetChar(json, startPos) == '"'))
+
+   // Skip whitespace only
+   while (startPos < StringLen(json) && StringGetChar(json, startPos) == ' ')
       startPos++;
-   
+
    int endPos = startPos;
-   bool inQuotes = false;
-   
-   // Find end of value
-   while (endPos < StringLen(json))
+
+   // Quoted string value
+   if (startPos < StringLen(json) && StringGetChar(json, startPos) == '"')
    {
-      char c = StringGetChar(json, endPos);
-      if (c == '"' && !inQuotes)
-      {
-         inQuotes = true;
-      }
-      else if (c == '"' && inQuotes)
-      {
-         break;
-      }
-      else if (!inQuotes && (c == ',' || c == '}'))
-      {
-         break;
-      }
-      endPos++;
+      startPos++;  // skip opening quote
+      endPos = startPos;
+      while (endPos < StringLen(json) && StringGetChar(json, endPos) != '"')
+         endPos++;
    }
-   
+   else
+   {
+      // Numeric or boolean — read until comma or closing brace
+      while (endPos < StringLen(json))
+      {
+         char c = StringGetChar(json, endPos);
+         if (c == ',' || c == '}')
+            break;
+         endPos++;
+      }
+   }
+
    return StringSubstr(json, startPos, endPos - startPos);
 }
 
@@ -2069,35 +2069,35 @@ string ExtractJsonValue(string json, string key)
    string searchKey = "\"" + key + "\":";
    int startPos = StringFind(json, searchKey);
    if (startPos == -1) return "";
-   
+
    startPos += StringLen(searchKey);
-   
-   // Skip whitespace and quotes
-   while (startPos < StringLen(json) && (StringGetChar(json, startPos) == ' ' || StringGetChar(json, startPos) == '"'))
+
+   // Skip whitespace only
+   while (startPos < StringLen(json) && StringGetChar(json, startPos) == ' ')
       startPos++;
-   
+
    int endPos = startPos;
-   bool inQuotes = false;
-   
-   // Find end of value
-   while (endPos < StringLen(json))
+
+   // Quoted string value
+   if (startPos < StringLen(json) && StringGetChar(json, startPos) == '"')
    {
-      char c = StringGetChar(json, endPos);
-      if (c == '"' && !inQuotes)
-      {
-         inQuotes = true;
-      }
-      else if (c == '"' && inQuotes)
-      {
-         break;
-      }
-      else if (!inQuotes && (c == ',' || c == '}'))
-      {
-         break;
-      }
-      endPos++;
+      startPos++;  // skip opening quote
+      endPos = startPos;
+      while (endPos < StringLen(json) && StringGetChar(json, endPos) != '"')
+         endPos++;
    }
-   
+   else
+   {
+      // Numeric or boolean — read until comma or closing brace
+      while (endPos < StringLen(json))
+      {
+         char c = StringGetChar(json, endPos);
+         if (c == ',' || c == '}')
+            break;
+         endPos++;
+      }
+   }
+
    return StringSubstr(json, startPos, endPos - startPos);
 }
 
