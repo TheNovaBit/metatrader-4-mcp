@@ -12,9 +12,12 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// MT4 data directory - used only when MT4_FILES_PATH is not set
+// MT4 data directory - used only when MT4_FILES_PATH is not set.
+// Derived from APPDATA so the same binary works on any Windows user account
+// (local dev: mahip, EC2: Administrator) without machine-specific edits.
 const MT4_DATA_PATH =
-  process.env.MT4_DATA_PATH || "C:\\Users\\mahip\\AppData\\Roaming\\MetaQuotes\\Terminal";
+  process.env.MT4_DATA_PATH ||
+  path.join(process.env.APPDATA || "", "MetaQuotes", "Terminal");
 
 // Pin to a specific MQL4/Files directory (recommended — mirrors mt4_client.py MT4_FILES_PATH).
 // Set this env var to the exact path, e.g.:
