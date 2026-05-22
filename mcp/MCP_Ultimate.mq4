@@ -155,6 +155,7 @@ void OnTick()
       // Process MCP commands
       ProcessOrderCommands();
       ProcessCloseCommands();
+      ProcessModifyCommands();
       ProcessBacktestCommands();
       
       // File-based reporting updates
@@ -847,106 +848,55 @@ void ProcessBacktestCommands()
 //+------------------------------------------------------------------+
 void ExecuteOrderCommand(string jsonCommand)
 {
-   // Simple JSON parsing for order execution
-   string symbol = ExtractJsonValue(jsonCommand, "symbol");
-   string operation = ExtractJsonValue(jsonCommand, "operation");
-   double lots = StringToDouble(ExtractJsonValue(jsonCommand, "lots"));
-   double price = StringToDouble(ExtractJsonValue(jsonCommand, "price"));
-   double stopLoss = StringToDouble(ExtractJsonValue(jsonCommand, "stop_loss"));
+   string symbol     = ExtractJsonValue(jsonCommand, "symbol");
+   string operation  = ExtractJsonValue(jsonCommand, "operation");
+   double lots       = StringToDouble(ExtractJsonValue(jsonCommand, "lots"));
+   double price      = StringToDouble(ExtractJsonValue(jsonCommand, "price"));
+   double stopLoss   = StringToDouble(ExtractJsonValue(jsonCommand, "stop_loss"));
    double takeProfit = StringToDouble(ExtractJsonValue(jsonCommand, "take_profit"));
-   string comment = ExtractJsonValue(jsonCommand, "comment");
-   
-   int orderType = -1;
+   string comment    = ExtractJsonValue(jsonCommand, "comment");
+   string requestId  = ExtractJsonValue(jsonCommand, "request_id");
+
+   int   orderType  = -1;
    color arrowColor = clrNONE;
-   
-   if (operation == "BUY")
-   {
-      orderType = OP_BUY;
-      price = MarketInfo(symbol, MODE_ASK);
-      arrowColor = clrBlue;
-   }
-   else if (operation == "SELL")
-   {
-      orderType = OP_SELL;
-      price = MarketInfo(symbol, MODE_BID);
-      arrowColor = clrRed;
-   }
-   else if (operation == "BUY_LIMIT")
-   {
-      orderType = OP_BUYLIMIT;
-      arrowColor = clrBlue;
-   }
-   else if (operation == "SELL_LIMIT")
-   {
-      orderType = OP_SELLLIMIT;
-      arrowColor = clrRed;
-   }
-   else if (operation == "BUY_STOP")
-   {
-      orderType = OP_BUYSTOP;
-      arrowColor = clrBlue;
-   }
-   else if (operation == "SELL_STOP")
-   {
-      orderType = OP_SELLSTOP;
-      arrowColor = clrRed;
-   }
-   
-   // Write result file
-   int resultHandle = FileOpen("order_result.txt", FILE_WRITE | FILE_TXT);
-   
+
+   if      (operation == "BUY")        { orderType = OP_BUY;       price = MarketInfo(symbol, MODE_ASK); arrowColor = clrBlue; }
+   else if (operation == "SELL")       { orderType = OP_SELL;      price = MarketInfo(symbol, MODE_BID); arrowColor = clrRed;  }
+   else if (operation == "BUY_LIMIT")  { orderType = OP_BUYLIMIT;  arrowColor = clrBlue; }
+   else if (operation == "SELL_LIMIT") { orderType = OP_SELLLIMIT; arrowColor = clrRed;  }
+   else if (operation == "BUY_STOP")   { orderType = OP_BUYSTOP;   arrowColor = clrBlue; }
+   else if (operation == "SELL_STOP")  { orderType = OP_SELLSTOP;  arrowColor = clrRed;  }
+
+   string json = "";
+
    if (orderType >= 0)
    {
       int ticket = OrderSend(symbol, orderType, lots, price, 3, stopLoss, takeProfit, comment, 0, 0, arrowColor);
-      
       if (ticket > 0)
       {
          Print("Order placed successfully. Ticket: ", ticket);
-         if (resultHandle != INVALID_HANDLE)
-         {
-            FileWrite(resultHandle, "{");
-            FileWrite(resultHandle, "\"success\": true,");
-            FileWrite(resultHandle, "\"ticket\": " + IntegerToString(ticket) + ",");
-            FileWrite(resultHandle, "\"symbol\": \"" + symbol + "\",");
-            FileWrite(resultHandle, "\"operation\": \"" + operation + "\",");
-            FileWrite(resultHandle, "\"lots\": " + DoubleToString(lots, 2) + ",");
-            FileWrite(resultHandle, "\"price\": " + DoubleToString(price, 5));
-            FileWrite(resultHandle, "}");
-         }
+         json = StringFormat("{\"success\":true,\"ticket\":%d,\"symbol\":\"%s\",\"operation\":\"%s\",\"request_id\":\"%s\"}",
+                             ticket, symbol, operation, requestId);
          LogOperation("ORDER_SUCCESS", "Order placed: " + operation + " " + symbol, "Ticket: " + IntegerToString(ticket));
       }
       else
       {
          int error = GetLastError();
          Print("Order failed. Error: ", error);
-         if (resultHandle != INVALID_HANDLE)
-         {
-            FileWrite(resultHandle, "{");
-            FileWrite(resultHandle, "\"success\": false,");
-            FileWrite(resultHandle, "\"error\": " + IntegerToString(error) + ",");
-            FileWrite(resultHandle, "\"description\": \"Order failed\"");
-            FileWrite(resultHandle, "}");
-         }
+         json = StringFormat("{\"success\":false,\"error\":%d,\"description\":\"OrderSend failed\",\"request_id\":\"%s\"}",
+                             error, requestId);
          LogOperation("ORDER_FAILED", "Order failed: " + operation + " " + symbol, "Error: " + IntegerToString(error));
       }
    }
    else
    {
-      if (resultHandle != INVALID_HANDLE)
-      {
-         FileWrite(resultHandle, "{");
-         FileWrite(resultHandle, "\"success\": false,");
-         FileWrite(resultHandle, "\"error\": \"Invalid operation type\",");
-         FileWrite(resultHandle, "\"operation\": \"" + operation + "\"");
-         FileWrite(resultHandle, "}");
-      }
+      json = StringFormat("{\"success\":false,\"error\":\"Invalid operation\",\"operation\":\"%s\",\"request_id\":\"%s\"}",
+                          operation, requestId);
       LogOperation("ORDER_INVALID", "Invalid operation type", operation);
    }
-   
-   if (resultHandle != INVALID_HANDLE)
-   {
-      FileClose(resultHandle);
-   }
+
+   int fh = FileOpen("order_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if (fh != INVALID_HANDLE) { FileWrite(fh, json); FileClose(fh); }
 }
 
 //+------------------------------------------------------------------+
@@ -954,16 +904,15 @@ void ExecuteOrderCommand(string jsonCommand)
 //+------------------------------------------------------------------+
 void ExecuteCloseCommand(string jsonCommand)
 {
-   int ticket = StringToInteger(ExtractJsonValue(jsonCommand, "ticket"));
-   
-   // Write result file
-   int resultHandle = FileOpen("close_result.txt", FILE_WRITE | FILE_TXT);
-   
+   int    ticket    = StringToInteger(ExtractJsonValue(jsonCommand, "ticket"));
+   string requestId = ExtractJsonValue(jsonCommand, "request_id");
+   string json      = "";
+
    if (OrderSelect(ticket, SELECT_BY_TICKET))
    {
-      bool result = false;
+      bool   result     = false;
       double closePrice = 0;
-      
+
       if (OrderType() == OP_BUY)
       {
          closePrice = MarketInfo(OrderSymbol(), MODE_BID);
@@ -974,53 +923,93 @@ void ExecuteCloseCommand(string jsonCommand)
          closePrice = MarketInfo(OrderSymbol(), MODE_ASK);
          result = OrderClose(ticket, OrderLots(), closePrice, 3, clrBlue);
       }
-      
+
       if (result)
       {
          Print("Position closed successfully. Ticket: ", ticket);
-         if (resultHandle != INVALID_HANDLE)
-         {
-            FileWrite(resultHandle, "{");
-            FileWrite(resultHandle, "\"success\": true,");
-            FileWrite(resultHandle, "\"ticket\": " + IntegerToString(ticket) + ",");
-            FileWrite(resultHandle, "\"close_price\": " + DoubleToString(closePrice, 5));
-            FileWrite(resultHandle, "}");
-         }
-         LogOperation("CLOSE_SUCCESS", "Position closed", "Ticket: " + IntegerToString(ticket) + ", Price: " + DoubleToString(closePrice, 5));
+         json = StringFormat("{\"success\":true,\"ticket\":%d,\"close_price\":%.5f,\"request_id\":\"%s\"}",
+                             ticket, closePrice, requestId);
+         LogOperation("CLOSE_SUCCESS", "Position closed", "Ticket: " + IntegerToString(ticket));
       }
       else
       {
          int error = GetLastError();
          Print("Failed to close position. Error: ", error);
-         if (resultHandle != INVALID_HANDLE)
-         {
-            FileWrite(resultHandle, "{");
-            FileWrite(resultHandle, "\"success\": false,");
-            FileWrite(resultHandle, "\"ticket\": " + IntegerToString(ticket) + ",");
-            FileWrite(resultHandle, "\"error\": " + IntegerToString(error) + ",");
-            FileWrite(resultHandle, "\"description\": \"Failed to close position\"");
-            FileWrite(resultHandle, "}");
-         }
+         json = StringFormat("{\"success\":false,\"ticket\":%d,\"error\":%d,\"description\":\"OrderClose failed\",\"request_id\":\"%s\"}",
+                             ticket, error, requestId);
          LogOperation("CLOSE_FAILED", "Failed to close position", "Ticket: " + IntegerToString(ticket) + ", Error: " + IntegerToString(error));
       }
    }
    else
    {
-      if (resultHandle != INVALID_HANDLE)
-      {
-         FileWrite(resultHandle, "{");
-         FileWrite(resultHandle, "\"success\": false,");
-         FileWrite(resultHandle, "\"ticket\": " + IntegerToString(ticket) + ",");
-         FileWrite(resultHandle, "\"error\": \"Order not found\"");
-         FileWrite(resultHandle, "}");
-      }
+      json = StringFormat("{\"success\":false,\"ticket\":%d,\"error\":\"Order not found\",\"request_id\":\"%s\"}",
+                          ticket, requestId);
       LogOperation("CLOSE_NOT_FOUND", "Order not found for close", "Ticket: " + IntegerToString(ticket));
    }
-   
-   if (resultHandle != INVALID_HANDLE)
+
+   int fh = FileOpen("close_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if (fh != INVALID_HANDLE) { FileWrite(fh, json); FileClose(fh); }
+}
+
+//+------------------------------------------------------------------+
+//| Process modify commands (trailing SL / breakeven SL)            |
+//+------------------------------------------------------------------+
+void ProcessModifyCommands()
+{
+   if (!FileIsExist("modify_commands.txt")) return;
+
+   int fh = FileOpen("modify_commands.txt", FILE_READ | FILE_TXT | FILE_ANSI);
+   if (fh == INVALID_HANDLE) return;
+
+   string jsonCommand = "";
+   while (!FileIsEnding(fh))
+      jsonCommand += FileReadString(fh);
+   FileClose(fh);
+   FileDelete("modify_commands.txt");
+
+   ExecuteModifyCommand(jsonCommand);
+   LogOperation("MODIFY", "Modify command processed", jsonCommand);
+}
+
+//+------------------------------------------------------------------+
+//| Execute modify command (trailing SL / breakeven SL)             |
+//+------------------------------------------------------------------+
+void ExecuteModifyCommand(string jsonCommand)
+{
+   int    ticket     = StringToInteger(ExtractJsonValue(jsonCommand, "ticket"));
+   double stopLoss   = StringToDouble(ExtractJsonValue(jsonCommand, "stop_loss"));
+   double takeProfit = StringToDouble(ExtractJsonValue(jsonCommand, "take_profit"));
+   string requestId  = ExtractJsonValue(jsonCommand, "request_id");
+   string json       = "";
+
+   if (OrderSelect(ticket, SELECT_BY_TICKET))
    {
-      FileClose(resultHandle);
+      bool ok = OrderModify(ticket, OrderOpenPrice(), stopLoss, takeProfit, 0, clrNONE);
+      if (ok)
+      {
+         Print("Order modified. Ticket: ", ticket, " SL: ", stopLoss, " TP: ", takeProfit);
+         json = StringFormat("{\"success\":true,\"ticket\":%d,\"sl\":%.5f,\"tp\":%.5f,\"request_id\":\"%s\"}",
+                             ticket, stopLoss, takeProfit, requestId);
+         LogOperation("MODIFY_SUCCESS", "Order modified", "Ticket: " + IntegerToString(ticket));
+      }
+      else
+      {
+         int error = GetLastError();
+         Print("OrderModify failed. Ticket: ", ticket, " Error: ", error);
+         json = StringFormat("{\"success\":false,\"ticket\":%d,\"error\":%d,\"description\":\"OrderModify failed\",\"request_id\":\"%s\"}",
+                             ticket, error, requestId);
+         LogOperation("MODIFY_FAILED", "OrderModify failed", "Ticket: " + IntegerToString(ticket) + ", Error: " + IntegerToString(error));
+      }
    }
+   else
+   {
+      json = StringFormat("{\"success\":false,\"ticket\":%d,\"error\":\"Order not found\",\"request_id\":\"%s\"}",
+                          ticket, requestId);
+      LogOperation("MODIFY_NOT_FOUND", "Order not found for modify", "Ticket: " + IntegerToString(ticket));
+   }
+
+   int fh = FileOpen("modify_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if (fh != INVALID_HANDLE) { FileWrite(fh, json); FileClose(fh); }
 }
 
 //+------------------------------------------------------------------+
