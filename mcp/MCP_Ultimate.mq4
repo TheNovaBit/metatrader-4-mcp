@@ -30,6 +30,9 @@ input bool TrackMinorPairs = false;         // Track minor currency pairs
 input bool TrackExoticPairs = false;        // Track exotic currency pairs
 input bool TrackCommodities = false;        // Track commodities (XAUUSD, XAGUSD, WTIUSD)
 
+input group "=== ORDER SETTINGS ==="
+input int MagicNumber = 20260101;           // Magic number stamped on every bridge order (must match BRIDGE_MAGIC_NUMBER in server.js)
+
 //--- Global variables
 datetime lastUpdate = 0;
 string filesPath = "";
@@ -109,6 +112,10 @@ int OnInit()
       SetupVisualIndicators();
    }
    
+   // Use a timer instead of OnTick so commands are processed even on low-tick symbols
+   // or during quiet periods where no price changes arrive.
+   EventSetMillisecondTimer(500);
+
    Print("MCP Ultimate Bridge initialization completed successfully");
    return(INIT_SUCCEEDED);
 }
@@ -118,6 +125,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   EventKillTimer();
    string reasonText = GetUninitReasonText(reason);
    Print("MCP Ultimate Bridge shutting down. Reason: ", reasonText);
    
@@ -139,9 +147,9 @@ void OnDeinit(const int reason)
 }
 
 //+------------------------------------------------------------------+
-//| Expert tick function                                             |
+//| Timer function — fires every 500 ms regardless of tick activity |
 //+------------------------------------------------------------------+
-void OnTick()
+void OnTimer()
 {
    if (TimeCurrent() - lastUpdate >= UpdateInterval / 1000)
    {
@@ -733,9 +741,17 @@ void WritePositionsInfo()
    int fileHandle = FileOpen("positions.txt", FILE_WRITE | FILE_TXT);
    if (fileHandle != INVALID_HANDLE)
    {
-      FileWrite(fileHandle, "TotalPositions=" + IntegerToString(OrdersTotal()));
+      // Count only market orders (BUY/SELL) so TotalPositions matches the
+      // list entries below.  OrdersTotal() includes pending orders which are
+      // written separately — mixing the two caused an off-by-N inconsistency.
+      int marketCount = 0;
+      for (int c = 0; c < OrdersTotal(); c++)
+         if (OrderSelect(c, SELECT_BY_POS, MODE_TRADES) && OrderType() <= 1)
+            marketCount++;
+
+      FileWrite(fileHandle, "TotalPositions=" + IntegerToString(marketCount));
       FileWrite(fileHandle, "");
-      
+
       for (int i = 0; i < OrdersTotal(); i++)
       {
          if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
@@ -856,7 +872,28 @@ void ExecuteOrderCommand(string jsonCommand)
    double takeProfit = StringToDouble(ExtractJsonValue(jsonCommand, "take_profit"));
    string comment    = ExtractJsonValue(jsonCommand, "comment");
    string requestId  = ExtractJsonValue(jsonCommand, "request_id");
+   // Magic number from command (falls back to EA input if absent)
+   string magicStr   = ExtractJsonValue(jsonCommand, "magic_number");
+   int    magic      = StringLen(magicStr) > 0 ? (int)StringToInteger(magicStr) : MagicNumber;
 
+   string json = "";
+
+   // ── Pre-flight checks ────────────────────────────────────────────────────────
+
+   // 1. AutoTrading must be enabled
+   if (!IsTradeAllowed())
+   {
+      json = StringFormat("{\"success\":false,\"error\":4109,\"description\":\"AutoTrading is disabled\",\"request_id\":\"%s\"}", requestId);
+      LogOperation("ORDER_BLOCKED", "AutoTrading disabled", operation + " " + symbol);
+      int fh0 = FileOpen("order_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
+      if (fh0 != INVALID_HANDLE) { FileWrite(fh0, json); FileClose(fh0); }
+      return;
+   }
+
+   // 2. Refresh quotes so MarketInfo() values are current
+   RefreshRates();
+
+   // 3. Determine order type and live price for market orders
    int   orderType  = -1;
    color arrowColor = clrNONE;
 
@@ -867,32 +904,42 @@ void ExecuteOrderCommand(string jsonCommand)
    else if (operation == "BUY_STOP")   { orderType = OP_BUYSTOP;   arrowColor = clrBlue; }
    else if (operation == "SELL_STOP")  { orderType = OP_SELLSTOP;  arrowColor = clrRed;  }
 
-   string json = "";
-
-   if (orderType >= 0)
-   {
-      int ticket = OrderSend(symbol, orderType, lots, price, 3, stopLoss, takeProfit, comment, 0, 0, arrowColor);
-      if (ticket > 0)
-      {
-         Print("Order placed successfully. Ticket: ", ticket);
-         json = StringFormat("{\"success\":true,\"ticket\":%d,\"symbol\":\"%s\",\"operation\":\"%s\",\"request_id\":\"%s\"}",
-                             ticket, symbol, operation, requestId);
-         LogOperation("ORDER_SUCCESS", "Order placed: " + operation + " " + symbol, "Ticket: " + IntegerToString(ticket));
-      }
-      else
-      {
-         int error = GetLastError();
-         Print("Order failed. Error: ", error);
-         json = StringFormat("{\"success\":false,\"error\":%d,\"description\":\"OrderSend failed\",\"request_id\":\"%s\"}",
-                             error, requestId);
-         LogOperation("ORDER_FAILED", "Order failed: " + operation + " " + symbol, "Error: " + IntegerToString(error));
-      }
-   }
-   else
+   if (orderType < 0)
    {
       json = StringFormat("{\"success\":false,\"error\":\"Invalid operation\",\"operation\":\"%s\",\"request_id\":\"%s\"}",
                           operation, requestId);
       LogOperation("ORDER_INVALID", "Invalid operation type", operation);
+      int fh1 = FileOpen("order_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
+      if (fh1 != INVALID_HANDLE) { FileWrite(fh1, json); FileClose(fh1); }
+      return;
+   }
+
+   // 4. Normalise lot size to broker step/min/max
+   double lotStep = MarketInfo(symbol, MODE_LOTSTEP);
+   double minLot  = MarketInfo(symbol, MODE_MINLOT);
+   double maxLot  = MarketInfo(symbol, MODE_MAXLOT);
+   if (lotStep > 0)
+      lots = MathFloor(lots / lotStep) * lotStep;
+   lots = MathMax(minLot, MathMin(maxLot, lots));
+   lots = NormalizeDouble(lots, 2);
+
+   // ── Place order ─────────────────────────────────────────────────────────────
+
+   int ticket = OrderSend(symbol, orderType, lots, price, 3, stopLoss, takeProfit, comment, magic, 0, arrowColor);
+   if (ticket > 0)
+   {
+      Print("Order placed successfully. Ticket: ", ticket, " Magic: ", magic);
+      json = StringFormat("{\"success\":true,\"ticket\":%d,\"symbol\":\"%s\",\"operation\":\"%s\",\"lots\":%.2f,\"price\":%.5f,\"request_id\":\"%s\"}",
+                          ticket, symbol, operation, lots, price, requestId);
+      LogOperation("ORDER_SUCCESS", "Order placed: " + operation + " " + symbol, "Ticket: " + IntegerToString(ticket));
+   }
+   else
+   {
+      int error = GetLastError();
+      Print("Order failed. Error: ", error, " Op: ", operation, " Symbol: ", symbol);
+      json = StringFormat("{\"success\":false,\"error\":%d,\"description\":\"OrderSend failed\",\"symbol\":\"%s\",\"operation\":\"%s\",\"request_id\":\"%s\"}",
+                          error, symbol, operation, requestId);
+      LogOperation("ORDER_FAILED", "Order failed: " + operation + " " + symbol, "Error: " + IntegerToString(error));
    }
 
    int fh = FileOpen("order_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);

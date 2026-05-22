@@ -40,6 +40,11 @@ const API_KEY = process.env.BRIDGE_API_KEY || "";
 const MT4_RESULT_TIMEOUT_MS = 5000;
 const MT4_RESULT_POLL_MS    = 200;
 
+// Magic number stamped on every order placed through the bridge.
+// Allows the EA to distinguish bridge orders from manually placed ones.
+// Must match MagicNumber input in MCP_Ultimate.mq4.
+const BRIDGE_MAGIC_NUMBER = 20260101;
+
 // ── Middleware ────────────────────────────────────────────────────────────────
 
 // Restrict CORS to same-origin (the bridge is a localhost API, not a public service)
@@ -152,6 +157,28 @@ async function sendMT4Command(commandFile, resultFile, command) {
       // File not yet written or not yet updated — keep polling
     }
   }
+
+  // ── Timeout cleanup (prevents stale-command execution) ───────────────────────
+  // Attempt to delete the command file so that, if MT4 hasn't read it yet,
+  // the order is cleanly cancelled.  If delete fails the file is already gone
+  // (EA consumed it but hasn't written the result yet — see one-last-check below).
+  await deleteMT4File(commandFile);
+
+  // One last result check: EA may have processed the command in the instant
+  // between our final poll and the timeout throw.  If so, return the result
+  // rather than falsely reporting failure (which would cause the caller to retry
+  // and potentially place a duplicate order).
+  try {
+    const raw    = await readMT4File(resultFile);
+    const result = JSON.parse(raw);
+    if (result.request_id === id) {
+      await deleteMT4File(resultFile);
+      return result;
+    }
+  } catch {
+    // Result not present — command was not processed in time
+  }
+
   throw new Error(`MT4 did not respond within ${MT4_RESULT_TIMEOUT_MS / 1000}s`);
 }
 
@@ -287,9 +314,12 @@ app.post("/api/order", async (req, res) => {
       "order_result.txt",
       { action: "PLACE_ORDER", symbol, operation, lots, price, stop_loss, take_profit,
         comment: req.body.comment || "Opened by Claude",
+        magic_number: BRIDGE_MAGIC_NUMBER,
         timestamp: Date.now() }
     );
-    res.json({ success: true, result });
+    // Mirror MT4's own success flag in the outer envelope so callers don't
+    // need to unwrap a nested object to detect broker-side failures.
+    res.json({ success: result.success === true, result });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -331,7 +361,7 @@ app.post("/api/close", async (req, res) => {
         lots: req.body.lots,   // optional — for partial close
         timestamp: Date.now() }
     );
-    res.json({ success: true, result });
+    res.json({ success: result.success === true, result });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -355,7 +385,7 @@ app.post("/api/modify", async (req, res) => {
       "modify_result.txt",
       { action: "MODIFY_ORDER", ticket, stop_loss, take_profit, timestamp: Date.now() }
     );
-    res.json({ success: true, result });
+    res.json({ success: result.success === true, result });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
