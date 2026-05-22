@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, MCP MT4 Integration"
 #property link      ""
-#property version   "1.00"
+#property version   "1.01"
 #property strict
 
 //--- Input parameters
@@ -21,14 +21,14 @@ string filesPath = "";
 int OnInit()
 {
    filesPath = TerminalInfoString(TERMINAL_DATA_PATH) + "\\MQL4\\Files\\";
-   
+
    Print("MCP Bridge initialized. Files path: ", filesPath);
-   
+
    // Create initial files
    WriteAccountInfo();
    WritePositionsInfo();
    WriteExpertsList();
-   
+
    return(INIT_SUCCEEDED);
 }
 
@@ -49,21 +49,22 @@ void OnTick()
    {
       // Update market data for major pairs
       WriteMarketData("EURUSD");
-      WriteMarketData("GBPUSD"); 
+      WriteMarketData("GBPUSD");
       WriteMarketData("USDJPY");
       WriteMarketData("USDCHF");
       WriteMarketData("AUDUSD");
       WriteMarketData("USDCAD");
-      
+
       // Update account and positions info
       WriteAccountInfo();
       WritePositionsInfo();
-      
+
       // Process pending commands
       ProcessOrderCommands();
       ProcessCloseCommands();
+      ProcessModifyCommands();
       ProcessBacktestCommands();
-      
+
       lastUpdate = TimeCurrent();
    }
 }
@@ -88,7 +89,7 @@ void WriteAccountInfo()
       double marginLevel = AccountEquity() > 0 && AccountMargin() > 0 ? AccountEquity() / AccountMargin() * 100 : 0;
       FileWrite(fileHandle, "MarginLevel=" + DoubleToString(marginLevel, 2));
       FileWrite(fileHandle, "Leverage=" + IntegerToString(AccountLeverage()));
-      
+
       FileClose(fileHandle);
    }
 }
@@ -100,7 +101,7 @@ void WriteMarketData(string symbol)
 {
    string filename = "market_data_" + symbol + ".txt";
    int fileHandle = FileOpen(filename, FILE_WRITE | FILE_TXT);
-   
+
    if (fileHandle != INVALID_HANDLE)
    {
       double bid = MarketInfo(symbol, MODE_BID);
@@ -108,7 +109,7 @@ void WriteMarketData(string symbol)
       double spread = MarketInfo(symbol, MODE_SPREAD);
       double high = MarketInfo(symbol, MODE_HIGH);
       double low = MarketInfo(symbol, MODE_LOW);
-      
+
       FileWrite(fileHandle, "Symbol=" + symbol);
       FileWrite(fileHandle, "Bid=" + DoubleToString(bid, 5));
       FileWrite(fileHandle, "Ask=" + DoubleToString(ask, 5));
@@ -116,7 +117,7 @@ void WriteMarketData(string symbol)
       FileWrite(fileHandle, "High=" + DoubleToString(high, 5));
       FileWrite(fileHandle, "Low=" + DoubleToString(low, 5));
       FileWrite(fileHandle, "Time=" + TimeToString(TimeCurrent()));
-      
+
       FileClose(fileHandle);
    }
 }
@@ -131,7 +132,7 @@ void WritePositionsInfo()
    {
       FileWrite(fileHandle, "TotalPositions=" + IntegerToString(OrdersTotal()));
       FileWrite(fileHandle, "");
-      
+
       for (int i = 0; i < OrdersTotal(); i++)
       {
          if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
@@ -153,165 +154,119 @@ void WritePositionsInfo()
             }
          }
       }
-      
+
       FileClose(fileHandle);
    }
 }
 
 //+------------------------------------------------------------------+
-//| Process order commands from MCP server                          |
+//| Process order commands from bridge server                        |
 //+------------------------------------------------------------------+
 void ProcessOrderCommands()
 {
-   if (FileIsExist("order_commands.txt"))
-   {
-      int fileHandle = FileOpen("order_commands.txt", FILE_READ | FILE_TXT);
-      if (fileHandle != INVALID_HANDLE)
-      {
-         string jsonCommand = "";
-         while (!FileIsEnding(fileHandle))
-         {
-            jsonCommand += FileReadString(fileHandle);
-         }
-         FileClose(fileHandle);
-         
-         // Delete the command file after reading
-         FileDelete("order_commands.txt");
-         
-         // Parse and execute the order command
-         ExecuteOrderCommand(jsonCommand);
-      }
-   }
+   if (!FileIsExist("order_commands.txt")) return;
+
+   int fh = FileOpen("order_commands.txt", FILE_READ | FILE_TXT | FILE_ANSI);
+   if (fh == INVALID_HANDLE) return;
+
+   string jsonCommand = "";
+   while (!FileIsEnding(fh))
+      jsonCommand += FileReadString(fh);
+   FileClose(fh);
+   FileDelete("order_commands.txt");
+
+   ExecuteOrderCommand(jsonCommand);
 }
 
 //+------------------------------------------------------------------+
-//| Process close commands from MCP server                          |
+//| Process close commands from bridge server                        |
 //+------------------------------------------------------------------+
 void ProcessCloseCommands()
 {
-   if (FileIsExist("close_commands.txt"))
-   {
-      int fileHandle = FileOpen("close_commands.txt", FILE_READ | FILE_TXT);
-      if (fileHandle != INVALID_HANDLE)
-      {
-         string jsonCommand = "";
-         while (!FileIsEnding(fileHandle))
-         {
-            jsonCommand += FileReadString(fileHandle);
-         }
-         FileClose(fileHandle);
-         
-         // Delete the command file after reading
-         FileDelete("close_commands.txt");
-         
-         // Parse and execute the close command
-         ExecuteCloseCommand(jsonCommand);
-      }
-   }
+   if (!FileIsExist("close_commands.txt")) return;
+
+   int fh = FileOpen("close_commands.txt", FILE_READ | FILE_TXT | FILE_ANSI);
+   if (fh == INVALID_HANDLE) return;
+
+   string jsonCommand = "";
+   while (!FileIsEnding(fh))
+      jsonCommand += FileReadString(fh);
+   FileClose(fh);
+   FileDelete("close_commands.txt");
+
+   ExecuteCloseCommand(jsonCommand);
 }
 
 //+------------------------------------------------------------------+
-//| Execute order command (simplified JSON parsing)                 |
+//| Process modify commands from bridge server (trailing SL/TP)      |
+//+------------------------------------------------------------------+
+void ProcessModifyCommands()
+{
+   if (!FileIsExist("modify_commands.txt")) return;
+
+   int fh = FileOpen("modify_commands.txt", FILE_READ | FILE_TXT | FILE_ANSI);
+   if (fh == INVALID_HANDLE) return;
+
+   string jsonCommand = "";
+   while (!FileIsEnding(fh))
+      jsonCommand += FileReadString(fh);
+   FileClose(fh);
+   FileDelete("modify_commands.txt");
+
+   ExecuteModifyCommand(jsonCommand);
+}
+
+//+------------------------------------------------------------------+
+//| Execute order command                                            |
 //+------------------------------------------------------------------+
 void ExecuteOrderCommand(string jsonCommand)
 {
-   // Simple JSON parsing for order execution
-   string symbol = ExtractJsonValue(jsonCommand, "symbol");
-   string operation = ExtractJsonValue(jsonCommand, "operation");
-   double lots = StringToDouble(ExtractJsonValue(jsonCommand, "lots"));
-   double price = StringToDouble(ExtractJsonValue(jsonCommand, "price"));
-   double stopLoss = StringToDouble(ExtractJsonValue(jsonCommand, "stop_loss"));
+   string symbol     = ExtractJsonValue(jsonCommand, "symbol");
+   string operation  = ExtractJsonValue(jsonCommand, "operation");
+   double lots       = StringToDouble(ExtractJsonValue(jsonCommand, "lots"));
+   double price      = StringToDouble(ExtractJsonValue(jsonCommand, "price"));
+   double stopLoss   = StringToDouble(ExtractJsonValue(jsonCommand, "stop_loss"));
    double takeProfit = StringToDouble(ExtractJsonValue(jsonCommand, "take_profit"));
-   string comment = ExtractJsonValue(jsonCommand, "comment");
-   
-   int orderType = -1;
+   string comment    = ExtractJsonValue(jsonCommand, "comment");
+   string requestId  = ExtractJsonValue(jsonCommand, "request_id");
+
+   int   orderType  = -1;
    color arrowColor = clrNONE;
-   
-   if (operation == "BUY")
-   {
-      orderType = OP_BUY;
-      price = MarketInfo(symbol, MODE_ASK);
-      arrowColor = clrBlue;
-   }
-   else if (operation == "SELL")
-   {
-      orderType = OP_SELL;
-      price = MarketInfo(symbol, MODE_BID);
-      arrowColor = clrRed;
-   }
-   else if (operation == "BUY_LIMIT")
-   {
-      orderType = OP_BUYLIMIT;
-      arrowColor = clrBlue;
-   }
-   else if (operation == "SELL_LIMIT")
-   {
-      orderType = OP_SELLLIMIT;
-      arrowColor = clrRed;
-   }
-   else if (operation == "BUY_STOP")
-   {
-      orderType = OP_BUYSTOP;
-      arrowColor = clrBlue;
-   }
-   else if (operation == "SELL_STOP")
-   {
-      orderType = OP_SELLSTOP;
-      arrowColor = clrRed;
-   }
-   
-   // Write result file
-   int resultHandle = FileOpen("order_result.txt", FILE_WRITE | FILE_TXT);
-   
+
+   if (operation == "BUY")        { orderType = OP_BUY;       price = MarketInfo(symbol, MODE_ASK); arrowColor = clrBlue; }
+   else if (operation == "SELL")  { orderType = OP_SELL;      price = MarketInfo(symbol, MODE_BID); arrowColor = clrRed;  }
+   else if (operation == "BUY_LIMIT")  { orderType = OP_BUYLIMIT;  arrowColor = clrBlue; }
+   else if (operation == "SELL_LIMIT") { orderType = OP_SELLLIMIT; arrowColor = clrRed;  }
+   else if (operation == "BUY_STOP")   { orderType = OP_BUYSTOP;   arrowColor = clrBlue; }
+   else if (operation == "SELL_STOP")  { orderType = OP_SELLSTOP;  arrowColor = clrRed;  }
+
+   string json = "";
+
    if (orderType >= 0)
    {
       int ticket = OrderSend(symbol, orderType, lots, price, 3, stopLoss, takeProfit, comment, 0, 0, arrowColor);
-      
       if (ticket > 0)
       {
          Print("Order placed successfully. Ticket: ", ticket);
-         if (resultHandle != INVALID_HANDLE)
-         {
-            FileWrite(resultHandle, "{");
-            FileWrite(resultHandle, "\"success\": true,");
-            FileWrite(resultHandle, "\"ticket\": " + IntegerToString(ticket) + ",");
-            FileWrite(resultHandle, "\"symbol\": \"" + symbol + "\",");
-            FileWrite(resultHandle, "\"operation\": \"" + operation + "\",");
-            FileWrite(resultHandle, "\"lots\": " + DoubleToString(lots, 2) + ",");
-            FileWrite(resultHandle, "\"price\": " + DoubleToString(price, 5));
-            FileWrite(resultHandle, "}");
-         }
+         json = StringFormat("{\"success\":true,\"ticket\":%d,\"symbol\":\"%s\",\"operation\":\"%s\",\"request_id\":\"%s\"}",
+                             ticket, symbol, operation, requestId);
       }
       else
       {
          int error = GetLastError();
          Print("Order failed. Error: ", error);
-         if (resultHandle != INVALID_HANDLE)
-         {
-            FileWrite(resultHandle, "{");
-            FileWrite(resultHandle, "\"success\": false,");
-            FileWrite(resultHandle, "\"error\": " + IntegerToString(error) + ",");
-            FileWrite(resultHandle, "\"description\": \"Order failed\"");
-            FileWrite(resultHandle, "}");
-         }
+         json = StringFormat("{\"success\":false,\"error\":%d,\"description\":\"OrderSend failed\",\"request_id\":\"%s\"}",
+                             error, requestId);
       }
    }
    else
    {
-      if (resultHandle != INVALID_HANDLE)
-      {
-         FileWrite(resultHandle, "{");
-         FileWrite(resultHandle, "\"success\": false,");
-         FileWrite(resultHandle, "\"error\": \"Invalid operation type\",");
-         FileWrite(resultHandle, "\"operation\": \"" + operation + "\"");
-         FileWrite(resultHandle, "}");
-      }
+      json = StringFormat("{\"success\":false,\"error\":\"Invalid operation\",\"operation\":\"%s\",\"request_id\":\"%s\"}",
+                          operation, requestId);
    }
-   
-   if (resultHandle != INVALID_HANDLE)
-   {
-      FileClose(resultHandle);
-   }
+
+   int fh = FileOpen("order_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if (fh != INVALID_HANDLE) { FileWrite(fh, json); FileClose(fh); }
 }
 
 //+------------------------------------------------------------------+
@@ -319,16 +274,15 @@ void ExecuteOrderCommand(string jsonCommand)
 //+------------------------------------------------------------------+
 void ExecuteCloseCommand(string jsonCommand)
 {
-   int ticket = StringToInteger(ExtractJsonValue(jsonCommand, "ticket"));
-   
-   // Write result file
-   int resultHandle = FileOpen("close_result.txt", FILE_WRITE | FILE_TXT);
-   
+   int    ticket    = StringToInteger(ExtractJsonValue(jsonCommand, "ticket"));
+   string requestId = ExtractJsonValue(jsonCommand, "request_id");
+   string json      = "";
+
    if (OrderSelect(ticket, SELECT_BY_TICKET))
    {
-      bool result = false;
+      bool   result     = false;
       double closePrice = 0;
-      
+
       if (OrderType() == OP_BUY)
       {
          closePrice = MarketInfo(OrderSymbol(), MODE_BID);
@@ -339,50 +293,67 @@ void ExecuteCloseCommand(string jsonCommand)
          closePrice = MarketInfo(OrderSymbol(), MODE_ASK);
          result = OrderClose(ticket, OrderLots(), closePrice, 3, clrBlue);
       }
-      
+
       if (result)
       {
          Print("Position closed successfully. Ticket: ", ticket);
-         if (resultHandle != INVALID_HANDLE)
-         {
-            FileWrite(resultHandle, "{");
-            FileWrite(resultHandle, "\"success\": true,");
-            FileWrite(resultHandle, "\"ticket\": " + IntegerToString(ticket) + ",");
-            FileWrite(resultHandle, "\"close_price\": " + DoubleToString(closePrice, 5));
-            FileWrite(resultHandle, "}");
-         }
+         json = StringFormat("{\"success\":true,\"ticket\":%d,\"close_price\":%.5f,\"request_id\":\"%s\"}",
+                             ticket, closePrice, requestId);
       }
       else
       {
          int error = GetLastError();
          Print("Failed to close position. Error: ", error);
-         if (resultHandle != INVALID_HANDLE)
-         {
-            FileWrite(resultHandle, "{");
-            FileWrite(resultHandle, "\"success\": false,");
-            FileWrite(resultHandle, "\"ticket\": " + IntegerToString(ticket) + ",");
-            FileWrite(resultHandle, "\"error\": " + IntegerToString(error) + ",");
-            FileWrite(resultHandle, "\"description\": \"Failed to close position\"");
-            FileWrite(resultHandle, "}");
-         }
+         json = StringFormat("{\"success\":false,\"ticket\":%d,\"error\":%d,\"description\":\"OrderClose failed\",\"request_id\":\"%s\"}",
+                             ticket, error, requestId);
       }
    }
    else
    {
-      if (resultHandle != INVALID_HANDLE)
+      json = StringFormat("{\"success\":false,\"ticket\":%d,\"error\":\"Order not found\",\"request_id\":\"%s\"}",
+                          ticket, requestId);
+   }
+
+   int fh = FileOpen("close_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if (fh != INVALID_HANDLE) { FileWrite(fh, json); FileClose(fh); }
+}
+
+//+------------------------------------------------------------------+
+//| Execute modify command (trailing SL / breakeven SL)              |
+//+------------------------------------------------------------------+
+void ExecuteModifyCommand(string jsonCommand)
+{
+   int    ticket     = StringToInteger(ExtractJsonValue(jsonCommand, "ticket"));
+   double stopLoss   = StringToDouble(ExtractJsonValue(jsonCommand, "stop_loss"));
+   double takeProfit = StringToDouble(ExtractJsonValue(jsonCommand, "take_profit"));
+   string requestId  = ExtractJsonValue(jsonCommand, "request_id");
+   string json       = "";
+
+   if (OrderSelect(ticket, SELECT_BY_TICKET))
+   {
+      bool ok = OrderModify(ticket, OrderOpenPrice(), stopLoss, takeProfit, 0, clrNONE);
+      if (ok)
       {
-         FileWrite(resultHandle, "{");
-         FileWrite(resultHandle, "\"success\": false,");
-         FileWrite(resultHandle, "\"ticket\": " + IntegerToString(ticket) + ",");
-         FileWrite(resultHandle, "\"error\": \"Order not found\"");
-         FileWrite(resultHandle, "}");
+         Print("Order modified. Ticket: ", ticket, " SL: ", stopLoss, " TP: ", takeProfit);
+         json = StringFormat("{\"success\":true,\"ticket\":%d,\"sl\":%.5f,\"tp\":%.5f,\"request_id\":\"%s\"}",
+                             ticket, stopLoss, takeProfit, requestId);
+      }
+      else
+      {
+         int error = GetLastError();
+         Print("OrderModify failed. Ticket: ", ticket, " Error: ", error);
+         json = StringFormat("{\"success\":false,\"ticket\":%d,\"error\":%d,\"description\":\"OrderModify failed\",\"request_id\":\"%s\"}",
+                             ticket, error, requestId);
       }
    }
-   
-   if (resultHandle != INVALID_HANDLE)
+   else
    {
-      FileClose(resultHandle);
+      json = StringFormat("{\"success\":false,\"ticket\":%d,\"error\":\"Order not found\",\"request_id\":\"%s\"}",
+                          ticket, requestId);
    }
+
+   int fh = FileOpen("modify_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if (fh != INVALID_HANDLE) { FileWrite(fh, json); FileClose(fh); }
 }
 
 //+------------------------------------------------------------------+
@@ -393,35 +364,25 @@ string ExtractJsonValue(string json, string key)
    string searchKey = "\"" + key + "\":";
    int startPos = StringFind(json, searchKey);
    if (startPos == -1) return "";
-   
+
    startPos += StringLen(searchKey);
-   
-   // Skip whitespace and quotes
+
+   // Skip whitespace and opening quote
    while (startPos < StringLen(json) && (StringGetChar(json, startPos) == ' ' || StringGetChar(json, startPos) == '"'))
       startPos++;
-   
-   int endPos = startPos;
+
+   int  endPos  = startPos;
    bool inQuotes = false;
-   
-   // Find end of value
+
    while (endPos < StringLen(json))
    {
       char c = StringGetChar(json, endPos);
-      if (c == '"' && !inQuotes)
-      {
-         inQuotes = true;
-      }
-      else if (c == '"' && inQuotes)
-      {
-         break;
-      }
-      else if (!inQuotes && (c == ',' || c == '}'))
-      {
-         break;
-      }
+      if (c == '"' && !inQuotes)       { inQuotes = true; }
+      else if (c == '"' && inQuotes)   { break; }
+      else if (!inQuotes && (c == ',' || c == '}')) { break; }
       endPos++;
    }
-   
+
    return StringSubstr(json, startPos, endPos - startPos);
 }
 
@@ -433,43 +394,31 @@ void WriteExpertsList()
    int fileHandle = FileOpen("experts_list.txt", FILE_WRITE | FILE_TXT);
    if (fileHandle != INVALID_HANDLE)
    {
-      // Add common Expert Advisors (user should update this list)
       FileWrite(fileHandle, "MCPBridge|MCP Bridge Expert Advisor|Current");
       FileWrite(fileHandle, "MACD Sample|Sample MACD Expert Advisor|Built-in");
       FileWrite(fileHandle, "Moving Average|Sample Moving Average EA|Built-in");
       FileWrite(fileHandle, "RSI|Relative Strength Index EA|Built-in");
-      
-      // Note: In a real implementation, this would scan the Experts folder
-      // For now, users need to manually add their EAs to this list
-      
       FileClose(fileHandle);
    }
 }
 
 //+------------------------------------------------------------------+
-//| Process backtest commands from MCP server                       |
+//| Process backtest commands from bridge server                     |
 //+------------------------------------------------------------------+
 void ProcessBacktestCommands()
 {
-   if (FileIsExist("backtest_commands.txt"))
-   {
-      int fileHandle = FileOpen("backtest_commands.txt", FILE_READ | FILE_TXT);
-      if (fileHandle != INVALID_HANDLE)
-      {
-         string jsonCommand = "";
-         while (!FileIsEnding(fileHandle))
-         {
-            jsonCommand += FileReadString(fileHandle);
-         }
-         FileClose(fileHandle);
-         
-         // Delete the command file after reading
-         FileDelete("backtest_commands.txt");
-         
-         // Execute the backtest command
-         ExecuteBacktestCommand(jsonCommand);
-      }
-   }
+   if (!FileIsExist("backtest_commands.txt")) return;
+
+   int fh = FileOpen("backtest_commands.txt", FILE_READ | FILE_TXT | FILE_ANSI);
+   if (fh == INVALID_HANDLE) return;
+
+   string jsonCommand = "";
+   while (!FileIsEnding(fh))
+      jsonCommand += FileReadString(fh);
+   FileClose(fh);
+   FileDelete("backtest_commands.txt");
+
+   ExecuteBacktestCommand(jsonCommand);
 }
 
 //+------------------------------------------------------------------+
@@ -477,47 +426,25 @@ void ProcessBacktestCommands()
 //+------------------------------------------------------------------+
 void ExecuteBacktestCommand(string jsonCommand)
 {
-   // Extract backtest parameters
-   string expert = ExtractJsonValue(jsonCommand, "expert");
-   string symbol = ExtractJsonValue(jsonCommand, "symbol");
-   string timeframe = ExtractJsonValue(jsonCommand, "timeframe");
-   string fromDate = ExtractJsonValue(jsonCommand, "from_date");
-   string toDate = ExtractJsonValue(jsonCommand, "to_date");
+   string expert         = ExtractJsonValue(jsonCommand, "expert");
+   string symbol         = ExtractJsonValue(jsonCommand, "symbol");
+   string timeframe      = ExtractJsonValue(jsonCommand, "timeframe");
+   string fromDate       = ExtractJsonValue(jsonCommand, "from_date");
+   string toDate         = ExtractJsonValue(jsonCommand, "to_date");
    double initialDeposit = StringToDouble(ExtractJsonValue(jsonCommand, "initial_deposit"));
-   string model = ExtractJsonValue(jsonCommand, "model");
-   bool optimization = ExtractJsonValue(jsonCommand, "optimization") == "true";
-   
-   // Write backtest results file
+   string model          = ExtractJsonValue(jsonCommand, "model");
+
    int resultHandle = FileOpen("backtest_results.txt", FILE_WRITE | FILE_TXT);
-   
    if (resultHandle != INVALID_HANDLE)
    {
-      // Note: MT4 doesn't have direct API for programmatic backtesting
-      // This is a simulation of what the results would look like
-      
       FileWrite(resultHandle, "{");
       FileWrite(resultHandle, "\"status\": \"simulated\",");
       FileWrite(resultHandle, "\"message\": \"Backtest simulation - MT4 requires manual backtesting\",");
       FileWrite(resultHandle, "\"expert\": \"" + expert + "\",");
-      FileWrite(resultHandle, "\"symbol\": \"" + symbol + "\",");
-      FileWrite(resultHandle, "\"timeframe\": \"" + timeframe + "\",");
-      FileWrite(resultHandle, "\"period\": \"" + fromDate + " to " + toDate + "\",");
-      FileWrite(resultHandle, "\"initial_deposit\": " + DoubleToString(initialDeposit, 2) + ",");
-      FileWrite(resultHandle, "\"model\": \"" + model + "\",");
-      FileWrite(resultHandle, "\"instructions\": [");
-      FileWrite(resultHandle, "\"1. Open MT4 Strategy Tester (Ctrl+R)\",");
-      FileWrite(resultHandle, "\"2. Select Expert: " + expert + "\",");
-      FileWrite(resultHandle, "\"3. Select Symbol: " + symbol + "\",");
-      FileWrite(resultHandle, "\"4. Select Timeframe: " + timeframe + "\",");
-      FileWrite(resultHandle, "\"5. Set Period: " + fromDate + " - " + toDate + "\",");
-      FileWrite(resultHandle, "\"6. Set Initial Deposit: " + DoubleToString(initialDeposit, 2) + "\",");
-      FileWrite(resultHandle, "\"7. Select Model: " + model + "\",");
-      FileWrite(resultHandle, "\"8. Click Start to run backtest\"");
-      FileWrite(resultHandle, "]");
+      FileWrite(resultHandle, "\"symbol\": \"" + symbol + "\"");
       FileWrite(resultHandle, "}");
-      
       FileClose(resultHandle);
    }
-   
+
    Print("Backtest command processed for: ", expert, " on ", symbol);
 }
