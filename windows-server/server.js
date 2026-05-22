@@ -26,7 +26,7 @@ const MT4_INSTALL_PATH =
   process.env.MT4_INSTALL_PATH ||
   "C:\\Program Files (x86)\\Pepperstone UK MetaTrader 4\\metaeditor.exe";
 
-const METAEDITOR_PATHS = MT4_INSTALL_PATH;
+const METAEDITOR_PATHS = [MT4_INSTALL_PATH];  // must be an array — findMetaEditor() iterates it
 
 // Shared secret for API key authentication.
 // Set BRIDGE_API_KEY in the EC2 environment (and in start_trader.bat).

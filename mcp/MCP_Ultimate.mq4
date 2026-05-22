@@ -923,10 +923,17 @@ void ExecuteCloseCommand(string jsonCommand)
          closePrice = MarketInfo(OrderSymbol(), MODE_ASK);
          result = OrderClose(ticket, OrderLots(), closePrice, 3, clrBlue);
       }
+      else
+      {
+         // Pending order (BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP) — use OrderDelete()
+         // OrderClose() is only valid for filled market orders; it silently does nothing
+         // (returns false, GetLastError() == 0) on pending orders.
+         result = OrderDelete(ticket, clrNONE);
+      }
 
       if (result)
       {
-         Print("Position closed successfully. Ticket: ", ticket);
+         Print("Position closed/deleted successfully. Ticket: ", ticket);
          json = StringFormat("{\"success\":true,\"ticket\":%d,\"close_price\":%.5f,\"request_id\":\"%s\"}",
                              ticket, closePrice, requestId);
          LogOperation("CLOSE_SUCCESS", "Position closed", "Ticket: " + IntegerToString(ticket));
@@ -934,7 +941,7 @@ void ExecuteCloseCommand(string jsonCommand)
       else
       {
          int error = GetLastError();
-         Print("Failed to close position. Error: ", error);
+         Print("Failed to close/delete order. Error: ", error);
          json = StringFormat("{\"success\":false,\"ticket\":%d,\"error\":%d,\"description\":\"OrderClose failed\",\"request_id\":\"%s\"}",
                              ticket, error, requestId);
          LogOperation("CLOSE_FAILED", "Failed to close position", "Ticket: " + IntegerToString(ticket) + ", Error: " + IntegerToString(error));
