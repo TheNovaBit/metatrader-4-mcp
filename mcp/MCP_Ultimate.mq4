@@ -923,9 +923,40 @@ void ExecuteOrderCommand(string jsonCommand)
    lots = MathMax(minLot, MathMin(maxLot, lots));
    lots = NormalizeDouble(lots, 2);
 
+   // 5. Idempotency — suppress duplicate if an open/pending order already has this comment+magic
+   for (int k = 0; k < OrdersTotal(); k++)
+   {
+      if (OrderSelect(k, SELECT_BY_POS, MODE_TRADES))
+      {
+         if (OrderSymbol() == symbol &&
+             OrderMagicNumber() == magic &&
+             StringLen(comment) > 0 &&
+             StringFind(OrderComment(), comment) >= 0)
+         {
+            string dupJson = StringFormat(
+               "{\"success\":true,\"ticket\":%d,\"symbol\":\"%s\",\"operation\":\"%s\","
+               "\"lots\":%.2f,\"price\":%.5f,\"request_id\":\"%s\",\"duplicate\":true}",
+               OrderTicket(), symbol, operation, OrderLots(), OrderOpenPrice(), requestId);
+            LogOperation("ORDER_DUPLICATE", "Duplicate suppressed — returning existing ticket",
+                         "Ticket: " + IntegerToString(OrderTicket()) + " Comment: " + comment);
+            int fhd = FileOpen("order_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
+            if (fhd != INVALID_HANDLE) { FileWrite(fhd, dupJson); FileClose(fhd); }
+            return;
+         }
+      }
+   }
+
    // ── Place order ─────────────────────────────────────────────────────────────
 
-   int ticket = OrderSend(symbol, orderType, lots, price, 3, stopLoss, takeProfit, comment, magic, 0, arrowColor);
+   // Broker-side expiry for pending orders (0 = never expires)
+   int      expiryMins = (int)StringToInteger(ExtractJsonValue(jsonCommand, "expiry_minutes"));
+   datetime expiry     = (expiryMins > 0) ? TimeCurrent() + expiryMins * 60 : 0;
+
+   // Asset-class slippage (default 3 if not provided)
+   string slippageStr = ExtractJsonValue(jsonCommand, "slippage");
+   int    slippage    = StringLen(slippageStr) > 0 ? (int)StringToInteger(slippageStr) : 3;
+
+   int ticket = OrderSend(symbol, orderType, lots, price, slippage, stopLoss, takeProfit, comment, magic, expiry, arrowColor);
    if (ticket > 0)
    {
       Print("Order placed successfully. Ticket: ", ticket, " Magic: ", magic);
@@ -960,15 +991,28 @@ void ExecuteCloseCommand(string jsonCommand)
       bool   result     = false;
       double closePrice = 0;
 
+      // Determine close size — honour partial close request if lots > 0 and < full position
+      double requestedLots = StringToDouble(ExtractJsonValue(jsonCommand, "lots"));
+      double closeLots     = OrderLots();
+      if (requestedLots > 0 && requestedLots < OrderLots())
+      {
+         double lotStep = MarketInfo(OrderSymbol(), MODE_LOTSTEP);
+         double minLot  = MarketInfo(OrderSymbol(), MODE_MINLOT);
+         closeLots = requestedLots;
+         if (lotStep > 0) closeLots = MathFloor(closeLots / lotStep) * lotStep;
+         closeLots = MathMax(minLot, closeLots);
+         closeLots = NormalizeDouble(closeLots, 2);
+      }
+
       if (OrderType() == OP_BUY)
       {
          closePrice = MarketInfo(OrderSymbol(), MODE_BID);
-         result = OrderClose(ticket, OrderLots(), closePrice, 3, clrRed);
+         result = OrderClose(ticket, closeLots, closePrice, 3, clrRed);
       }
       else if (OrderType() == OP_SELL)
       {
          closePrice = MarketInfo(OrderSymbol(), MODE_ASK);
-         result = OrderClose(ticket, OrderLots(), closePrice, 3, clrBlue);
+         result = OrderClose(ticket, closeLots, closePrice, 3, clrBlue);
       }
       else
       {

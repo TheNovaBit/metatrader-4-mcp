@@ -315,6 +315,8 @@ app.post("/api/order", async (req, res) => {
       { action: "PLACE_ORDER", symbol, operation, lots, price, stop_loss, take_profit,
         comment: req.body.comment || "Opened by Claude",
         magic_number: BRIDGE_MAGIC_NUMBER,
+        expiry_minutes: req.body.expiry_minutes || 0,
+        slippage: req.body.slippage || 3,
         timestamp: Date.now() }
     );
     // Mirror MT4's own success flag in the outer envelope so callers don't
