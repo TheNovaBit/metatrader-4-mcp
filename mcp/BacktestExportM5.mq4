@@ -6,8 +6,9 @@
 //|   1. Open MetaEditor, compile this file (F7)                     |
 //|   2. In MT4: Tools → Scripts → BacktestExportM5                  |
 //|      (attach to any chart — symbol is set via the Symbol input)   |
-//|   3. Output: MQL4\Files\scalper_bt_SYMBOL.csv                    |
-//|      Copy to D:\Claude - MT4 - Scalper\ before running backtest  |
+//|   3. Output written directly to terminal data folder:            |
+//|      ...Terminal\847DD919767F27CB10D9143EE38EC5D9\MQL4\Files\    |
+//|      backtest_scalper.py reads from there — no copy needed.      |
 //|                                                                   |
 //| CSV columns:                                                      |
 //|   time, open, high, low, close,                                   |
