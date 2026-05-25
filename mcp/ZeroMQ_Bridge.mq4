@@ -54,8 +54,6 @@ int OnInit()
    if (!g_push.bind(pushAddr)) { Print("ZMQ_Bridge: PUSH bind failed on ", pushAddr); return INIT_FAILED; }
    if (!g_rep.bind(repAddr))   { Print("ZMQ_Bridge: REP bind failed on ",  repAddr);  return INIT_FAILED; }
 
-   // Cap outbound buffer so a disconnected Python doesn't queue unboundedly
-   g_push.setHighWaterMark(100, 0);
    g_push.setLinger(0);
    g_rep.setLinger(0);
 
