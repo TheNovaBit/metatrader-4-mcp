@@ -259,10 +259,9 @@ string BuildSymbolJson(string sym)
    }
    if (asian_high == 0 || asian_low == DBL_MAX) { asian_high = 0; asian_low = 0; }
 
-   // M15 arrays — 30 closed bars (bar 0 = forming, skipped; bars 1-30 published).
-   // 30 bars suffices for BB(20) and RSI(14) convergence in the Python agents.
+   // M15 arrays — 5 bars for context only (scalper signals use M5 arrays below).
    string m15C = "", m15H = "", m15L = "", m15T = "";
-   for (int b = 1; b <= 30; b++)
+   for (int b = 1; b <= 5; b++)
    {
       if (b > 1) { m15C += ","; m15H += ","; m15L += ","; m15T += ","; }
       m15C += DoubleToString(iClose(sym, PERIOD_M15, b), digits);
@@ -271,6 +270,30 @@ string BuildSymbolJson(string sym)
       m15T += TimeToString(iTime(sym, PERIOD_M15, b), TIME_DATE|TIME_MINUTES);
    }
    double atr14_m15 = iATR(sym, PERIOD_M15, 14, 1);
+
+   // M5 arrays — 40 closed bars (bar 0 = forming, skipped; bars 1-40 published).
+   // 40 bars = 3.3 hours; sufficient for EMA(21), BB(20), RSI(14) convergence.
+   string m5C = "", m5H = "", m5L = "", m5T = "";
+   for (int b5 = 1; b5 <= 40; b5++)
+   {
+      if (b5 > 1) { m5C += ","; m5H += ","; m5L += ","; m5T += ","; }
+      m5C += DoubleToString(iClose(sym, PERIOD_M5, b5), digits);
+      m5H += DoubleToString(iHigh( sym, PERIOD_M5, b5), digits);
+      m5L += DoubleToString(iLow(  sym, PERIOD_M5, b5), digits);
+      m5T += TimeToString(iTime(sym, PERIOD_M5, b5), TIME_DATE|TIME_MINUTES);
+   }
+   double atr14_m5  = iATR(sym, PERIOD_M5, 14, 1);
+   double ema8_m5   = iMA(sym, PERIOD_M5,  8, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double ema8_m5p  = iMA(sym, PERIOD_M5,  8, 0, MODE_EMA, PRICE_CLOSE, 1);
+   double ema21_m5  = iMA(sym, PERIOD_M5, 21, 0, MODE_EMA, PRICE_CLOSE, 0);
+   double ema21_m5p = iMA(sym, PERIOD_M5, 21, 0, MODE_EMA, PRICE_CLOSE, 1);
+   double ema50_m5  = iMA(sym, PERIOD_M5, 50, 0, MODE_EMA, PRICE_CLOSE, 0);
+   string trend_m5  = (bid > ema50_m5) ? "BULLISH" : ((bid < ema50_m5) ? "BEARISH" : "NEUTRAL");
+   string cross_m5;
+   if      (ema8_m5p <= ema21_m5p && ema8_m5 > ema21_m5) cross_m5 = "BULLISH_CROSS";
+   else if (ema8_m5p >= ema21_m5p && ema8_m5 < ema21_m5) cross_m5 = "BEARISH_CROSS";
+   else if (ema8_m5 > ema21_m5)                           cross_m5 = "ABOVE";
+   else                                                    cross_m5 = "BELOW";
 
    // Build JSON — all values as strings (matches existing file-format parsing in agent.py)
    string j = "{";
@@ -324,6 +347,16 @@ string BuildSymbolJson(string sym)
    j += JStr("BarLows_M15",       m15L)                                            + ",";
    j += JStr("BarTimes_M15",      m15T)                                            + ",";
    j += JStr("ATR14_M15",         DoubleToString(atr14_m15, digits))               + ",";
+   j += JStr("BarCloses_M5",     m5C)                                              + ",";
+   j += JStr("BarHighs_M5",      m5H)                                              + ",";
+   j += JStr("BarLows_M5",       m5L)                                              + ",";
+   j += JStr("BarTimes_M5",      m5T)                                              + ",";
+   j += JStr("ATR14_M5",         DoubleToString(atr14_m5,  digits))               + ",";
+   j += JStr("EMA8_M5",          DoubleToString(ema8_m5,   digits))               + ",";
+   j += JStr("EMA21_M5",         DoubleToString(ema21_m5,  digits))               + ",";
+   j += JStr("EMA50_M5",         DoubleToString(ema50_m5,  digits))               + ",";
+   j += JStr("Trend_M5",         trend_m5)                                        + ",";
+   j += JStr("Cross_M5",         cross_m5)                                        + ",";
    j += JStr("LastUpdate",        TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)) + ",";
    j += JStr("WriteComplete",     "1");
    j += "}";
