@@ -27,7 +27,7 @@
 // ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------
-extern int    UpdateIntervalSec = 1;          // Data push interval (seconds)
+extern int    UpdateIntervalSec = 3;          // Data push interval (seconds)
 extern int    DataPushPort      = 5556;       // PUSH port (data → Python)
 extern int    OrderRepPort      = 5555;       // REP port  (orders ← Python)
 extern string SymbolList        = "XAGUSD.r,XAUUSD.r,EURUSD.r,GBPJPY.r,EURCHF.r,EURAUD.r,CADJPY.r,GBPCHF.r,GBPCAD.r,EURGBP.r,EURNZD.r,GBPAUD.r,AUDNZD.r";
@@ -60,7 +60,10 @@ int OnInit()
    Print("ZMQ_Bridge v1.0 started — PUSH=", pushAddr, "  REP=", repAddr);
    EventSetMillisecondTimer(100);   // 100ms timer keeps REP latency low
 
-   PushAllData();                   // immediate initial push
+   // Do NOT call PushAllData() here. Calling it in OnInit blocks the MT4 main
+   // thread while loading indicator history for every symbol in SymbolList
+   // across M15/H1/H4 timeframes, causing the terminal to freeze until all
+   // history is fetched from disk. The timer fires within 100ms anyway.
    return INIT_SUCCEEDED;
 }
 
@@ -256,9 +259,10 @@ string BuildSymbolJson(string sym)
    }
    if (asian_high == 0 || asian_low == DBL_MAX) { asian_high = 0; asian_low = 0; }
 
-   // M15 arrays (48 bars = 12 hours)
+   // M15 arrays — 30 closed bars (bar 0 = forming, skipped; bars 1-30 published).
+   // 30 bars suffices for BB(20) and RSI(14) convergence in the Python agents.
    string m15C = "", m15H = "", m15L = "", m15T = "";
-   for (int b = 1; b <= 48; b++)
+   for (int b = 1; b <= 30; b++)
    {
       if (b > 1) { m15C += ","; m15H += ","; m15L += ","; m15T += ","; }
       m15C += DoubleToString(iClose(sym, PERIOD_M15, b), digits);
