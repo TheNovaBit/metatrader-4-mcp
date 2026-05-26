@@ -105,6 +105,11 @@ int OnStart()
    }
 
    FileClose(fh);
-   Print("BacktestExportM5: done. File: ", fname, "  Rows: ", total);
+   string msg = "BacktestExportM5 complete\n"
+                "Symbol : " + sym + "\n"
+                "Bars   : " + IntegerToString(total) + "\n"
+                "File   : " + fname;
+   Print(msg);
+   Alert(msg);
    return 0;
 }
