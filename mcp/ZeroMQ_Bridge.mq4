@@ -30,8 +30,13 @@
 extern int    UpdateIntervalSec = 3;          // Data push interval (seconds)
 extern int    DataPushPort      = 5558;       // PUSH port (data → Python) — scalper
 extern int    OrderRepPort      = 5557;       // REP port  (orders ← Python) — scalper
+// SymbolList is loaded from MQL4\Files\symbols.txt at OnInit if the file is
+// present (deploy_ea.bat copies it from D:\Claude - MT4 - Scalper\symbols.txt).
+// This default is the fallback used when symbols.txt is missing — keep it in
+// sync with the scalper repo's symbols.txt so a manual reattach still works.
 extern string SymbolList        = "EURUSD.r,GBPUSD.r,USDJPY.r,NZDUSD.r,CADJPY.r,AUDUSD.r,USDCHF.r,GBPAUD.r";
 extern int    MagicNumber       = 20260200;   // scalper magic (swing uses 20260101)
+extern string SymbolListFile    = "symbols.txt";   // file under MQL4\Files\ — blank to disable runtime load
 
 // ---------------------------------------------------------------------------
 // ZMQ context and sockets (module-level; created once)
@@ -41,6 +46,42 @@ Socket  g_push(g_ctx, ZMQ_PUSH);
 Socket  g_rep(g_ctx, ZMQ_REP);
 
 datetime g_lastPush = 0;
+
+// ---------------------------------------------------------------------------
+// Symbol list loader — reads MQL4\Files\<SymbolListFile> if present
+//
+// Format: one symbol per line. Blank lines and lines starting with '#' are
+// ignored. Returns a comma-separated string usable by StringSplit, or ""
+// when the file is missing/empty (caller falls back to the extern SymbolList).
+//
+// This keeps the EA in sync with the scalper repo's symbols.txt — add a
+// symbol there, run deploy_ea.bat (which also copies symbols.txt), reattach
+// the EA, done. No EA recompile needed for symbol-list changes.
+// ---------------------------------------------------------------------------
+string LoadSymbolListFromFile(string fname)
+{
+   if (StringLen(fname) == 0) return "";
+   int fh = FileOpen(fname, FILE_READ | FILE_TXT | FILE_ANSI);
+   if (fh == INVALID_HANDLE) return "";
+
+   string out = "";
+   int count = 0;
+   while (!FileIsEnding(fh))
+   {
+      string line = FileReadString(fh);
+      StringTrimLeft(line);
+      StringTrimRight(line);
+      if (StringLen(line) == 0) continue;
+      if (StringGetChar(line, 0) == '#') continue;
+      if (count > 0) out += ",";
+      out += line;
+      count++;
+   }
+   FileClose(fh);
+   if (count == 0) return "";
+   Print("ZMQ_Bridge: loaded ", count, " symbols from ", fname);
+   return out;
+}
 
 // ---------------------------------------------------------------------------
 // Init / Deinit
@@ -56,6 +97,18 @@ int OnInit()
 
    g_push.setLinger(0);
    g_rep.setLinger(0);
+
+   // Override extern SymbolList with the file-based list if present
+   string loaded = LoadSymbolListFromFile(SymbolListFile);
+   if (StringLen(loaded) > 0)
+   {
+      SymbolList = loaded;
+      Print("ZMQ_Bridge: SymbolList <- ", SymbolList, " (from ", SymbolListFile, ")");
+   }
+   else
+   {
+      Print("ZMQ_Bridge: SymbolList <- ", SymbolList, " (extern fallback; ", SymbolListFile, " not found)");
+   }
 
    Print("ZMQ_Bridge v1.0 started — PUSH=", pushAddr, "  REP=", repAddr);
    EventSetMillisecondTimer(100);   // 100ms timer keeps REP latency low
