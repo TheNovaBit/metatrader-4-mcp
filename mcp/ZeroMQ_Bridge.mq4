@@ -420,6 +420,8 @@ string BuildPositionsJson()
       positions += JStr("StopLoss",     DoubleToString(OrderStopLoss(), digs))   + ",";
       positions += JStr("TakeProfit",   DoubleToString(OrderTakeProfit(), digs)) + ",";
       positions += JStr("Profit",       DoubleToString(OrderProfit(), 2))        + ",";
+      positions += JStr("Commission",   DoubleToString(OrderCommission(), 2))    + ",";
+      positions += JStr("Swap",         DoubleToString(OrderSwap(), 2))          + ",";
       positions += JStr("OpenTime",     TimeToString(OrderOpenTime()))           + ",";
       positions += JStr("Comment",      OrderComment());
       positions += "}";
