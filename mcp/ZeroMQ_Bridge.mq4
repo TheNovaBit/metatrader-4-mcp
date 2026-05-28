@@ -28,10 +28,10 @@
 // Inputs
 // ---------------------------------------------------------------------------
 extern int    UpdateIntervalSec = 3;          // Data push interval (seconds)
-extern int    DataPushPort      = 5556;       // PUSH port (data → Python)
-extern int    OrderRepPort      = 5555;       // REP port  (orders ← Python)
-extern string SymbolList        = "XAGUSD.r,XAUUSD.r,EURUSD.r,GBPJPY.r,EURCHF.r,EURAUD.r,CADJPY.r,GBPCHF.r,GBPCAD.r,EURGBP.r,EURNZD.r,GBPAUD.r,AUDNZD.r";
-extern int    MagicNumber       = 20260101;
+extern int    DataPushPort      = 5558;       // PUSH port (data → Python) — scalper
+extern int    OrderRepPort      = 5557;       // REP port  (orders ← Python) — scalper
+extern string SymbolList        = "EURUSD.r,GBPUSD.r,USDJPY.r,NZDUSD.r,CADJPY.r,AUDUSD.r,USDCHF.r,GBPAUD.r";
+extern int    MagicNumber       = 20260200;   // scalper magic (swing uses 20260101)
 
 // ---------------------------------------------------------------------------
 // ZMQ context and sockets (module-level; created once)
