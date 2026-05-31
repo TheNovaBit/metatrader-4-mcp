@@ -312,11 +312,13 @@ string BuildSymbolJson(string sym)
    }
    if (asian_high == 0 || asian_low == DBL_MAX) { asian_high = 0; asian_low = 0; }
 
-   // M15 arrays — 5 bars for context only (scalper signals use M5 arrays below).
-   string m15C = "", m15H = "", m15L = "", m15T = "";
-   for (int b = 1; b <= 5; b++)
+   // M15 arrays — 8 closed bars (sufficient for HEIKIN_STREAK_M15 which uses n=5 HA recurrence).
+   // Opens added 2026-05 for Heikin Ashi computation on the M15 timeframe.
+   string m15O = "", m15C = "", m15H = "", m15L = "", m15T = "";
+   for (int b = 1; b <= 8; b++)
    {
-      if (b > 1) { m15C += ","; m15H += ","; m15L += ","; m15T += ","; }
+      if (b > 1) { m15O += ","; m15C += ","; m15H += ","; m15L += ","; m15T += ","; }
+      m15O += DoubleToString(iOpen( sym, PERIOD_M15, b), digits);
       m15C += DoubleToString(iClose(sym, PERIOD_M15, b), digits);
       m15H += DoubleToString(iHigh( sym, PERIOD_M15, b), digits);
       m15L += DoubleToString(iLow(  sym, PERIOD_M15, b), digits);
@@ -326,10 +328,12 @@ string BuildSymbolJson(string sym)
 
    // M5 arrays — 40 closed bars (bar 0 = forming, skipped; bars 1-40 published).
    // 40 bars = 3.3 hours; sufficient for EMA(21), BB(20), RSI(14) convergence.
-   string m5C = "", m5H = "", m5L = "", m5T = "";
+   // Opens added 2026-05 for any future M5 Heikin Ashi or candle-pattern detectors.
+   string m5O = "", m5C = "", m5H = "", m5L = "", m5T = "";
    for (int b5 = 1; b5 <= 40; b5++)
    {
-      if (b5 > 1) { m5C += ","; m5H += ","; m5L += ","; m5T += ","; }
+      if (b5 > 1) { m5O += ","; m5C += ","; m5H += ","; m5L += ","; m5T += ","; }
+      m5O += DoubleToString(iOpen( sym, PERIOD_M5, b5), digits);
       m5C += DoubleToString(iClose(sym, PERIOD_M5, b5), digits);
       m5H += DoubleToString(iHigh( sym, PERIOD_M5, b5), digits);
       m5L += DoubleToString(iLow(  sym, PERIOD_M5, b5), digits);
@@ -395,11 +399,13 @@ string BuildSymbolJson(string sym)
    j += JStr("MACD_Hist_1H_Prev", DoubleToString(macd_h2, digits + 2))             + ",";
    j += JStr("Asian_High",        DoubleToString(asian_high, digits))              + ",";
    j += JStr("Asian_Low",         DoubleToString(asian_low, digits))               + ",";
+   j += JStr("BarOpens_M15",      m15O)                                            + ",";
    j += JStr("BarCloses_M15",     m15C)                                            + ",";
    j += JStr("BarHighs_M15",      m15H)                                            + ",";
    j += JStr("BarLows_M15",       m15L)                                            + ",";
    j += JStr("BarTimes_M15",      m15T)                                            + ",";
    j += JStr("ATR14_M15",         DoubleToString(atr14_m15, digits))               + ",";
+   j += JStr("BarOpens_M5",      m5O)                                              + ",";
    j += JStr("BarCloses_M5",     m5C)                                              + ",";
    j += JStr("BarHighs_M5",      m5H)                                              + ",";
    j += JStr("BarLows_M5",       m5L)                                              + ",";
