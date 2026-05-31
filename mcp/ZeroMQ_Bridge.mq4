@@ -340,6 +340,22 @@ string BuildSymbolJson(string sym)
       m5T += TimeToString(iTime(sym, PERIOD_M5, b5), TIME_DATE|TIME_MINUTES);
    }
    double atr14_m5  = iATR(sym, PERIOD_M5, 14, 1);
+
+   // M1 arrays — 300 closed bars for the SNIPER_M1 composer (Phase 3 SHADOW,
+   // EURUSD only). Knob preset: pivot 25/25, sweep 30, MSS/FVG 100 — needs
+   // ≥250 closed bars per push. UNTESTED at this scale: 300 × 4 OHLC × ~12
+   // chars ≈ 14 KB per symbol per push; watch journal for truncation.
+   string m1O = "", m1C = "", m1H = "", m1L = "", m1T = "";
+   for (int b1 = 1; b1 <= 300; b1++)
+   {
+      if (b1 > 1) { m1O += ","; m1C += ","; m1H += ","; m1L += ","; m1T += ","; }
+      m1O += DoubleToString(iOpen( sym, PERIOD_M1, b1), digits);
+      m1C += DoubleToString(iClose(sym, PERIOD_M1, b1), digits);
+      m1H += DoubleToString(iHigh( sym, PERIOD_M1, b1), digits);
+      m1L += DoubleToString(iLow(  sym, PERIOD_M1, b1), digits);
+      m1T += TimeToString(iTime(sym, PERIOD_M1, b1), TIME_DATE|TIME_MINUTES);
+   }
+   double atr14_m1  = iATR(sym, PERIOD_M1, 14, 1);
    double ema8_m5   = iMA(sym, PERIOD_M5,  8, 0, MODE_EMA, PRICE_CLOSE, 0);
    double ema8_m5p  = iMA(sym, PERIOD_M5,  8, 0, MODE_EMA, PRICE_CLOSE, 1);
    double ema21_m5  = iMA(sym, PERIOD_M5, 21, 0, MODE_EMA, PRICE_CLOSE, 0);
@@ -411,6 +427,12 @@ string BuildSymbolJson(string sym)
    j += JStr("BarLows_M5",       m5L)                                              + ",";
    j += JStr("BarTimes_M5",      m5T)                                              + ",";
    j += JStr("ATR14_M5",         DoubleToString(atr14_m5,  digits))               + ",";
+   j += JStr("BarOpens_M1",      m1O)                                              + ",";
+   j += JStr("BarCloses_M1",     m1C)                                              + ",";
+   j += JStr("BarHighs_M1",      m1H)                                              + ",";
+   j += JStr("BarLows_M1",       m1L)                                              + ",";
+   j += JStr("BarTimes_M1",      m1T)                                              + ",";
+   j += JStr("ATR14_M1",         DoubleToString(atr14_m1,  digits))               + ",";
    j += JStr("EMA8_M5",          DoubleToString(ema8_m5,   digits))               + ",";
    j += JStr("EMA21_M5",         DoubleToString(ema21_m5,  digits))               + ",";
    j += JStr("EMA50_M5",         DoubleToString(ema50_m5,  digits))               + ",";
