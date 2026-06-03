@@ -1,0 +1,38 @@
+// Pure, testable helpers for the MT4 HTTP bridge.
+// No express, no server start — safe to import from tests.
+
+export const VALID_OPS = ["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"];
+export const PENDING_OPS = ["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"];
+
+/**
+ * Validate an /api/order request body.
+ * Returns { ok: true } or { ok: false, error: "<message>" }.
+ * Rejects non-positive lots/stop_loss/take_profit; requires price>0 for pending ops.
+ */
+export function validateOrderRequest(body) {
+  const { symbol, operation, lots, price, stop_loss, take_profit } = body || {};
+
+  if (!symbol || typeof symbol !== "string") {
+    return { ok: false, error: "Missing or invalid field: symbol" };
+  }
+  if (!operation || !VALID_OPS.includes(operation)) {
+    return { ok: false, error: `Missing or invalid field: operation (must be one of ${VALID_OPS.join(", ")})` };
+  }
+  if (typeof lots !== "number" || lots <= 0) {
+    return { ok: false, error: "Missing or invalid field: lots (must be a positive number)" };
+  }
+  if (typeof stop_loss !== "number" || stop_loss <= 0) {
+    return { ok: false, error: "Missing or invalid field: stop_loss (must be a positive number)" };
+  }
+  if (typeof take_profit !== "number" || take_profit <= 0) {
+    return { ok: false, error: "Missing or invalid field: take_profit (must be a positive number)" };
+  }
+  if (PENDING_OPS.includes(operation)) {
+    if (typeof price !== "number" || price <= 0) {
+      return { ok: false, error: "Missing or invalid field: price (must be > 0 for pending orders)" };
+    }
+  } else if (price != null && typeof price !== "number") {
+    return { ok: false, error: "Invalid field: price" };
+  }
+  return { ok: true };
+}
