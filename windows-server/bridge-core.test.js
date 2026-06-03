@@ -48,3 +48,38 @@ test("validateOrderRequest rejects an unknown operation", () => {
   assert.equal(r.ok, false);
   assert.match(r.error, /operation/);
 });
+
+test("validateOrderRequest rejects NaN lots", () => {
+  const r = validateOrderRequest({ ...validPending, lots: NaN });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /lots/);
+});
+
+test("validateOrderRequest rejects Infinity lots", () => {
+  const r = validateOrderRequest({ ...validPending, lots: Infinity });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /lots/);
+});
+
+test("validateOrderRequest rejects NaN stop_loss", () => {
+  const r = validateOrderRequest({ ...validPending, stop_loss: NaN });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /stop_loss/);
+});
+
+test("validateOrderRequest rejects NaN price on a pending order", () => {
+  const r = validateOrderRequest({ ...validPending, price: NaN });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /price/);
+});
+
+test("validateOrderRequest rejects a whitespace-only symbol", () => {
+  const r = validateOrderRequest({ ...validPending, symbol: "   " });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /symbol/);
+});
+
+test("validateOrderRequest rejects a null body", () => {
+  const r = validateOrderRequest(null);
+  assert.equal(r.ok, false);
+});

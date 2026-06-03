@@ -4,6 +4,10 @@
 export const VALID_OPS = ["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"];
 export const PENDING_OPS = ["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"];
 
+function isPositiveFinite(v) {
+  return typeof v === "number" && Number.isFinite(v) && v > 0;
+}
+
 /**
  * Validate an /api/order request body.
  * Returns { ok: true } or { ok: false, error: "<message>" }.
@@ -12,23 +16,23 @@ export const PENDING_OPS = ["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"];
 export function validateOrderRequest(body) {
   const { symbol, operation, lots, price, stop_loss, take_profit } = body || {};
 
-  if (!symbol || typeof symbol !== "string") {
+  if (!symbol || typeof symbol !== "string" || symbol.trim() === "") {
     return { ok: false, error: "Missing or invalid field: symbol" };
   }
   if (!operation || !VALID_OPS.includes(operation)) {
     return { ok: false, error: `Missing or invalid field: operation (must be one of ${VALID_OPS.join(", ")})` };
   }
-  if (typeof lots !== "number" || lots <= 0) {
+  if (!isPositiveFinite(lots)) {
     return { ok: false, error: "Missing or invalid field: lots (must be a positive number)" };
   }
-  if (typeof stop_loss !== "number" || stop_loss <= 0) {
+  if (!isPositiveFinite(stop_loss)) {
     return { ok: false, error: "Missing or invalid field: stop_loss (must be a positive number)" };
   }
-  if (typeof take_profit !== "number" || take_profit <= 0) {
+  if (!isPositiveFinite(take_profit)) {
     return { ok: false, error: "Missing or invalid field: take_profit (must be a positive number)" };
   }
   if (PENDING_OPS.includes(operation)) {
-    if (typeof price !== "number" || price <= 0) {
+    if (!isPositiveFinite(price)) {
       return { ok: false, error: "Missing or invalid field: price (must be > 0 for pending orders)" };
     }
   } else if (price != null && typeof price !== "number") {
