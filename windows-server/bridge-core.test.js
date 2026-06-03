@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { validateOrderRequest } from "./bridge-core.js";
 import fs from "node:fs/promises";
@@ -110,4 +110,44 @@ test("writeFileAtomic overwrites an existing file", async () => {
   await writeFileAtomic(fp, "first");
   await writeFileAtomic(fp, "second");
   assert.equal(await fs.readFile(fp, "utf-8"), "second");
+});
+
+test("writeFileAtomic retries once on a transient rename failure then succeeds", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-atomic-"));
+  const fp = path.join(dir, "order_commands.txt");
+  const realRename = fs.rename.bind(fs);
+  let calls = 0;
+  mock.method(fs, "rename", async (...args) => {
+    calls++;
+    if (calls === 1) { const e = new Error("EPERM"); e.code = "EPERM"; throw e; }
+    return realRename(...args);
+  });
+  try {
+    await writeFileAtomic(fp, "retry-ok");
+    assert.equal(await fs.readFile(fp, "utf-8"), "retry-ok");
+    assert.equal(calls, 2);
+    const leftover = (await fs.readdir(dir)).filter((f) => f.endsWith(".tmp"));
+    assert.equal(leftover.length, 0);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("writeFileAtomic rethrows and cleans up tmp when all rename attempts fail", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-atomic-"));
+  const fp = path.join(dir, "order_commands.txt");
+  mock.method(fs, "rename", async () => { const e = new Error("EPERM"); e.code = "EPERM"; throw e; });
+  try {
+    await assert.rejects(() => writeFileAtomic(fp, "nope"), /EPERM/);
+    const leftover = (await fs.readdir(dir)).filter((f) => f.endsWith(".tmp"));
+    assert.equal(leftover.length, 0);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("writeFileAtomic rejects a non-string content", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-atomic-"));
+  const fp = path.join(dir, "order_commands.txt");
+  await assert.rejects(() => writeFileAtomic(fp, { not: "a string" }), TypeError);
 });

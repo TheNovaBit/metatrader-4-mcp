@@ -49,21 +49,36 @@ export function validateOrderRequest(body) {
  * rename it onto the target. The reader (the EA) therefore sees either the old
  * file or the complete new file — never a partial write.
  * On a transient rename failure (e.g. the EA holds the target open on Windows),
- * retry once after a short delay, then surface the error.
+ * retry once after a short delay, then surface the error. The temp file is
+ * always cleaned up if it is never renamed into place.
+ *
+ * @param {string} filePath  Absolute path of the target file.
+ * @param {string} content   File contents (must be a string).
  */
 export async function writeFileAtomic(filePath, content, { retries = 1, retryDelayMs = 50 } = {}) {
+  if (typeof content !== "string") {
+    throw new TypeError("writeFileAtomic: content must be a string");
+  }
   const tmpPath = `${filePath}.${randomUUID()}.tmp`;
-  await fs.writeFile(tmpPath, content, "utf-8");
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await fs.rename(tmpPath, filePath);
-      return;
-    } catch (err) {
-      if (attempt >= retries) {
-        try { await fs.unlink(tmpPath); } catch { /* best-effort cleanup */ }
-        throw err;
+  let renamed = false;
+  try {
+    await fs.writeFile(tmpPath, content, "utf-8");
+    for (let attempt = 0; ; attempt++) {
+      try {
+        // On Windows, libuv calls MoveFileExW with MOVEFILE_REPLACE_EXISTING,
+        // so this atomically replaces any existing target on the same volume.
+        await fs.rename(tmpPath, filePath);
+        renamed = true;
+        return;
+      } catch (err) {
+        // retryDelayMs (50) ~ a brief window for the EA to release a held file handle.
+        if (attempt >= retries) throw err;
+        await new Promise((r) => setTimeout(r, retryDelayMs));
       }
-      await new Promise((r) => setTimeout(r, retryDelayMs));
+    }
+  } finally {
+    if (!renamed) {
+      try { await fs.unlink(tmpPath); } catch { /* best-effort cleanup */ }
     }
   }
 }
