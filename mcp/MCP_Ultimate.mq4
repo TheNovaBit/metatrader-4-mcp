@@ -860,6 +860,15 @@ void ProcessBacktestCommands()
 }
 
 //+------------------------------------------------------------------+
+//| Write an order-result JSON to order_result.txt                  |
+//+------------------------------------------------------------------+
+void WriteOrderResult(string json)
+{
+   int fh = FileOpen("order_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if (fh != INVALID_HANDLE) { FileWrite(fh, json); FileClose(fh); }
+}
+
+//+------------------------------------------------------------------+
 //| Execute order command (simplified JSON parsing)                 |
 //+------------------------------------------------------------------+
 void ExecuteOrderCommand(string jsonCommand)
@@ -885,8 +894,7 @@ void ExecuteOrderCommand(string jsonCommand)
    {
       json = StringFormat("{\"success\":false,\"error\":4109,\"description\":\"AutoTrading is disabled\",\"request_id\":\"%s\"}", requestId);
       LogOperation("ORDER_BLOCKED", "AutoTrading disabled", operation + " " + symbol);
-      int fh0 = FileOpen("order_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
-      if (fh0 != INVALID_HANDLE) { FileWrite(fh0, json); FileClose(fh0); }
+      WriteOrderResult(json);
       return;
    }
 
@@ -909,8 +917,7 @@ void ExecuteOrderCommand(string jsonCommand)
       json = StringFormat("{\"success\":false,\"error\":\"Invalid operation\",\"operation\":\"%s\",\"request_id\":\"%s\"}",
                           operation, requestId);
       LogOperation("ORDER_INVALID", "Invalid operation type", operation);
-      int fh1 = FileOpen("order_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
-      if (fh1 != INVALID_HANDLE) { FileWrite(fh1, json); FileClose(fh1); }
+      WriteOrderResult(json);
       return;
    }
 
@@ -939,8 +946,7 @@ void ExecuteOrderCommand(string jsonCommand)
                OrderTicket(), symbol, operation, OrderLots(), OrderOpenPrice(), requestId);
             LogOperation("ORDER_DUPLICATE", "Duplicate suppressed — returning existing ticket",
                          "Ticket: " + IntegerToString(OrderTicket()) + " Comment: " + comment);
-            int fhd = FileOpen("order_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
-            if (fhd != INVALID_HANDLE) { FileWrite(fhd, dupJson); FileClose(fhd); }
+            WriteOrderResult(dupJson);
             return;
          }
       }
@@ -973,8 +979,7 @@ void ExecuteOrderCommand(string jsonCommand)
       LogOperation("ORDER_FAILED", "Order failed: " + operation + " " + symbol, "Error: " + IntegerToString(error));
    }
 
-   int fh = FileOpen("order_result.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
-   if (fh != INVALID_HANDLE) { FileWrite(fh, json); FileClose(fh); }
+   WriteOrderResult(json);
 }
 
 //+------------------------------------------------------------------+
