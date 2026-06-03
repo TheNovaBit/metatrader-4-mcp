@@ -34,7 +34,7 @@ input group "=== ORDER SETTINGS ==="
 input int MagicNumber = 20260101;           // Magic number stamped on every bridge order (must match BRIDGE_MAGIC_NUMBER in server.js)
 
 //--- Global variables
-datetime lastUpdate = 0;
+uint lastUpdateTicks = 0;   // GetTickCount() ms — wall-clock throttle (not broker time)
 string filesPath = "";
 string mcpVersion = "3.00";
 
@@ -151,7 +151,7 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   if (TimeCurrent() - lastUpdate >= UpdateInterval / 1000)
+   if (GetTickCount() - lastUpdateTicks >= (uint)UpdateInterval)
    {
       OperationCounter++;
       
@@ -178,7 +178,7 @@ void OnTimer()
          UpdateVisualIndicators();
       }
       
-      lastUpdate = TimeCurrent();
+      lastUpdateTicks = GetTickCount();
    }
 }
 
