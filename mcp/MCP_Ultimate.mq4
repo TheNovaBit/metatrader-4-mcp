@@ -869,6 +869,74 @@ void WriteOrderResult(string json)
 }
 
 //+------------------------------------------------------------------+
+//| Order risk firewall. Returns "" if the order is safe to send,   |
+//| otherwise a short reason string. `entry` is the parsed `price`  |
+//| (for market orders the caller has already set price = live      |
+//| MarketInfo bid/ask).                                            |
+//+------------------------------------------------------------------+
+string ValidateOrderCommand(string symbol, int orderType, double lots,
+                            double entry, double stopLoss, double takeProfit,
+                            bool allowUnprotected)
+{
+   if (allowUnprotected) return "";
+
+   bool isLong    = (orderType == OP_BUY || orderType == OP_BUYLIMIT || orderType == OP_BUYSTOP);
+   bool isPending = (orderType == OP_BUYLIMIT || orderType == OP_SELLLIMIT ||
+                     orderType == OP_BUYSTOP  || orderType == OP_SELLSTOP);
+
+   // ── Tier 1: required protection (raw values, before lot normalisation) ──
+   if (lots <= 0)                  return "lots<=0";
+   if (stopLoss <= 0)              return "stop_loss<=0";
+   if (takeProfit <= 0)            return "take_profit<=0";
+   if (isPending && entry <= 0)    return "price<=0";
+
+   // ── Tier 2: side & distance correctness ──
+   double point     = MarketInfo(symbol, MODE_POINT);
+   double stopLevel = MarketInfo(symbol, MODE_STOPLEVEL) * point;
+   double ask       = MarketInfo(symbol, MODE_ASK);
+   double bid       = MarketInfo(symbol, MODE_BID);
+
+   if (isLong)
+   {
+      if (!(stopLoss < entry))            return "SL not below entry (long)";
+      if (!(takeProfit > entry))          return "TP not above entry (long)";
+      if ((entry - stopLoss)   < stopLevel) return "SL within stopLevel";
+      if ((takeProfit - entry) < stopLevel) return "TP within stopLevel";
+   }
+   else
+   {
+      if (!(stopLoss > entry))            return "SL not above entry (short)";
+      if (!(takeProfit < entry))          return "TP not below entry (short)";
+      if ((stopLoss - entry)   < stopLevel) return "SL within stopLevel";
+      if ((entry - takeProfit) < stopLevel) return "TP within stopLevel";
+   }
+
+   // Pending entry side vs market
+   if (orderType == OP_BUYLIMIT)
+   {
+      if (!(entry < ask))            return "BUY_LIMIT entry>=Ask";
+      if ((ask - entry) < stopLevel) return "BUY_LIMIT within stopLevel";
+   }
+   else if (orderType == OP_SELLLIMIT)
+   {
+      if (!(entry > bid))            return "SELL_LIMIT entry<=Bid";
+      if ((entry - bid) < stopLevel) return "SELL_LIMIT within stopLevel";
+   }
+   else if (orderType == OP_BUYSTOP)
+   {
+      if (!(entry > ask))            return "BUY_STOP entry<=Ask";
+      if ((entry - ask) < stopLevel) return "BUY_STOP within stopLevel";
+   }
+   else if (orderType == OP_SELLSTOP)
+   {
+      if (!(entry < bid))            return "SELL_STOP entry>=Bid";
+      if ((bid - entry) < stopLevel) return "SELL_STOP within stopLevel";
+   }
+
+   return "";
+}
+
+//+------------------------------------------------------------------+
 //| Execute order command (simplified JSON parsing)                 |
 //+------------------------------------------------------------------+
 void ExecuteOrderCommand(string jsonCommand)
@@ -917,6 +985,21 @@ void ExecuteOrderCommand(string jsonCommand)
       json = StringFormat("{\"success\":false,\"error\":\"Invalid operation\",\"operation\":\"%s\",\"request_id\":\"%s\"}",
                           operation, requestId);
       LogOperation("ORDER_INVALID", "Invalid operation type", operation);
+      WriteOrderResult(json);
+      return;
+   }
+
+   // 3b. Risk firewall — reject naked / wrong-sided orders before sizing & send.
+   //     `price` here is already the live bid/ask for market orders (set above)
+   //     and the requested entry for pending orders.
+   bool allowUnprotected = (ExtractJsonValue(jsonCommand, "allow_unprotected") == "true");
+   string vErr = ValidateOrderCommand(symbol, orderType, lots, price, stopLoss, takeProfit, allowUnprotected);
+   if (vErr != "")
+   {
+      json = StringFormat(
+         "{\"success\":false,\"error\":9001,\"description\":\"FIREWALL_REJECTED: %s\",\"symbol\":\"%s\",\"operation\":\"%s\",\"request_id\":\"%s\"}",
+         vErr, symbol, operation, requestId);
+      LogOperation("ORDER_FIREWALL", "Firewall rejected: " + vErr, operation + " " + symbol);
       WriteOrderResult(json);
       return;
    }
