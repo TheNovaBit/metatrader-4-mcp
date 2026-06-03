@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { validateOrderRequest } from "./bridge-core.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { writeFileAtomic } from "./bridge-core.js";
 
 const validPending = {
   symbol: "EURUSD.r", operation: "BUY_LIMIT", lots: 0.1,
@@ -82,4 +86,28 @@ test("validateOrderRequest rejects a whitespace-only symbol", () => {
 test("validateOrderRequest rejects a null body", () => {
   const r = validateOrderRequest(null);
   assert.equal(r.ok, false);
+});
+
+test("writeFileAtomic writes the complete content", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-atomic-"));
+  const fp = path.join(dir, "order_commands.txt");
+  const payload = JSON.stringify({ action: "PLACE_ORDER", lots: 0.1 });
+  await writeFileAtomic(fp, payload);
+  assert.equal(await fs.readFile(fp, "utf-8"), payload);
+});
+
+test("writeFileAtomic leaves no .tmp file behind", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-atomic-"));
+  const fp = path.join(dir, "order_commands.txt");
+  await writeFileAtomic(fp, "x");
+  const leftover = (await fs.readdir(dir)).filter((f) => f.endsWith(".tmp"));
+  assert.equal(leftover.length, 0);
+});
+
+test("writeFileAtomic overwrites an existing file", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-atomic-"));
+  const fp = path.join(dir, "order_commands.txt");
+  await writeFileAtomic(fp, "first");
+  await writeFileAtomic(fp, "second");
+  assert.equal(await fs.readFile(fp, "utf-8"), "second");
 });

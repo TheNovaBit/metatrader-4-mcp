@@ -1,6 +1,9 @@
 // Pure, testable helpers for the MT4 HTTP bridge.
 // No express, no server start — safe to import from tests.
 
+import fs from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+
 export const VALID_OPS = ["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"];
 export const PENDING_OPS = ["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"];
 
@@ -39,4 +42,28 @@ export function validateOrderRequest(body) {
     return { ok: false, error: "Invalid field: price" };
   }
   return { ok: true };
+}
+
+/**
+ * Write `content` to `filePath` atomically: write a unique temp file, then
+ * rename it onto the target. The reader (the EA) therefore sees either the old
+ * file or the complete new file — never a partial write.
+ * On a transient rename failure (e.g. the EA holds the target open on Windows),
+ * retry once after a short delay, then surface the error.
+ */
+export async function writeFileAtomic(filePath, content, { retries = 1, retryDelayMs = 50 } = {}) {
+  const tmpPath = `${filePath}.${randomUUID()}.tmp`;
+  await fs.writeFile(tmpPath, content, "utf-8");
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.rename(tmpPath, filePath);
+      return;
+    } catch (err) {
+      if (attempt >= retries) {
+        try { await fs.unlink(tmpPath); } catch { /* best-effort cleanup */ }
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, retryDelayMs));
+    }
+  }
 }
