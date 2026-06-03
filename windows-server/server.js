@@ -99,6 +99,8 @@ async function readMT4File(filename) {
   return content.trim();
 }
 
+// NOTE: non-atomic, un-serialized write. Retained ONLY for the /api/backtest path
+// (not a live-money command). Live command writes use writeMT4FileAtomic + commandMutex.
 async function writeMT4File(filename, content) {
   const dir      = await getMT4FilesDir();
   const filePath = path.join(dir, filename);
@@ -108,7 +110,7 @@ async function writeMT4File(filename, content) {
 
 // Serializes the full send+poll round-trip per command file so two concurrent
 // same-type requests can't clobber an unconsumed command (the round-trip already
-// waits for the EA to consume the command before returning).
+// waits for the EA to write back a matching result (by request_id) before returning).
 const commandMutex = createKeyedMutex();
 
 // Atomic command write — EA never observes a partial command file.

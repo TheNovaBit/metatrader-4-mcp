@@ -34,6 +34,10 @@ export function validateOrderRequest(body) {
   if (!isPositiveFinite(take_profit)) {
     return { ok: false, error: "Missing or invalid field: take_profit (must be a positive number)" };
   }
+  // price is required (>0) only for pending orders. Market BUY/SELL legitimately
+  // omit it — the EA fills the live bid/ask — so price is optional there (this is
+  // a deliberate, stricter-where-it-matters asymmetry; the agent always sends a
+  // pending order with price>0 anyway).
   if (PENDING_OPS.includes(operation)) {
     if (!isPositiveFinite(price)) {
       return { ok: false, error: "Missing or invalid field: price (must be > 0 for pending orders)" };
