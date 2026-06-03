@@ -90,6 +90,8 @@ export async function writeFileAtomic(filePath, content, { retries = 1, retryDel
  * chain (the stored tail swallows errors).
  */
 export function createKeyedMutex() {
+  // Keys are expected to be a small, long-lived set (the bridge uses 3 fixed
+  // command-file paths). Do NOT key by per-request IDs — `tails` never prunes.
   const tails = new Map();
   return function run(key, fn) {
     const prev = tails.get(key) || Promise.resolve();

@@ -167,10 +167,16 @@ test("createKeyedMutex serializes tasks sharing a key", async () => {
 test("createKeyedMutex runs different keys concurrently", async () => {
   const mutex = createKeyedMutex();
   const events = [];
-  const a = mutex("order", async () => { events.push("A-start"); await delay(25); events.push("A-end"); });
-  const b = mutex("close", async () => { events.push("B-start"); await delay(5); events.push("B-end"); });
-  await Promise.all([a, b]);
-  // close (key B) finishes before order (key A) because they do not block each other
+  let releaseA;
+  const aGate = new Promise((r) => { releaseA = r; });
+  // A (key "order") is gated open; B (key "close") must start AND finish while A
+  // is still running — proving different keys do not block each other.
+  const a = mutex("order", async () => { events.push("A-start"); await aGate; events.push("A-end"); });
+  const b = mutex("close", async () => { events.push("B-start"); events.push("B-end"); });
+  await b;
+  assert.deepEqual(events, ["A-start", "B-start", "B-end"]);
+  releaseA();
+  await a;
   assert.deepEqual(events, ["A-start", "B-start", "B-end", "A-end"]);
 });
 
