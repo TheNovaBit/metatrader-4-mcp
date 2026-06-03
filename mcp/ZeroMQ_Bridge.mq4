@@ -634,11 +634,17 @@ string HandlePlaceOrder(string cmd)
                           comment, magic, expiry, arrowColor);
    if (ticket > 0)
    {
+      // Return the ACTUAL fill (OrderOpenPrice) as open_price so the agent can
+      // measure true slippage vs the requested price (Fix F). Falls back to the
+      // requested price if the ticket can't be selected.
+      double fillPrice = price;
+      if (OrderSelect(ticket, SELECT_BY_TICKET))
+         fillPrice = OrderOpenPrice();
       Print("ZMQ_Bridge: order placed ticket=", ticket, " ", operation, " ", symbol);
       return StringFormat(
          "{\"success\":true,\"ticket\":%d,\"symbol\":\"%s\",\"operation\":\"%s\","
-         "\"lots\":%.2f,\"price\":%.5f}",
-         ticket, symbol, operation, lots, price);
+         "\"lots\":%.2f,\"price\":%.5f,\"open_price\":%.5f}",
+         ticket, symbol, operation, lots, price, fillPrice);
    }
 
    int err = GetLastError();
