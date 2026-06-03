@@ -569,6 +569,9 @@ string ProcessCommand(string cmd)
    if (action == "modify")
       return HandleModify(cmd);
 
+   if (action == "get_closed_trade")
+      return HandleHistory(cmd);
+
    return StringFormat("{\"success\":false,\"error\":\"unknown cmd: %s\"}", action);
 }
 
@@ -644,6 +647,28 @@ string HandlePlaceOrder(string cmd)
       "{\"success\":false,\"error\":%d,\"description\":\"OrderSend failed\","
       "\"symbol\":\"%s\",\"operation\":\"%s\"}",
       err, symbol, operation);
+}
+
+// ---------------------------------------------------------------------------
+// Closed-trade history lookup — realised P&L (price + commission + swap) by
+// ticket. Lets the Python agent record broker truth instead of last floating
+// P&L. Returns success:false if the ticket is not in this terminal's history.
+// ---------------------------------------------------------------------------
+
+string HandleHistory(string cmd)
+{
+   int ticket = (int)StringToInteger(ExtractJsonValue(cmd, "ticket"));
+   if (!OrderSelect(ticket, SELECT_BY_TICKET, MODE_HISTORY))
+      return StringFormat(
+         "{\"success\":false,\"error\":\"ticket %d not in history\"}", ticket);
+
+   return StringFormat(
+      "{\"success\":true,\"ticket\":%d,\"profit\":%.2f,\"commission\":%.2f,"
+      "\"swap\":%.2f,\"open_price\":%.5f,\"close_price\":%.5f,\"lots\":%.2f,"
+      "\"comment\":\"%s\",\"close_time\":\"%s\"}",
+      OrderTicket(), OrderProfit(), OrderCommission(), OrderSwap(),
+      OrderOpenPrice(), OrderClosePrice(), OrderLots(),
+      OrderComment(), TimeToString(OrderCloseTime(), TIME_DATE | TIME_SECONDS));
 }
 
 // ---------------------------------------------------------------------------
