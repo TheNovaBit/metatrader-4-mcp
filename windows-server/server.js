@@ -5,6 +5,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
+import { validateOrderRequest, writeFileAtomic, createKeyedMutex } from "./bridge-core.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -105,6 +106,18 @@ async function writeMT4File(filename, content) {
   await fs.writeFile(filePath, content, "utf-8");
 }
 
+// Serializes the full send+poll round-trip per command file so two concurrent
+// same-type requests can't clobber an unconsumed command (the round-trip already
+// waits for the EA to consume the command before returning).
+const commandMutex = createKeyedMutex();
+
+// Atomic command write — EA never observes a partial command file.
+async function writeMT4FileAtomic(filename, content) {
+  const dir = await getMT4FilesDir();
+  await fs.mkdir(dir, { recursive: true });
+  await writeFileAtomic(path.join(dir, filename), content);
+}
+
 async function deleteMT4File(filename) {
   try {
     const dir = await getMT4FilesDir();
@@ -137,49 +150,44 @@ async function findMT4ExpertsDirectory() {
  * Throws if MT4 does not respond within MT4_RESULT_TIMEOUT_MS ms.
  */
 async function sendMT4Command(commandFile, resultFile, command) {
-  const id = randomUUID();
-  command.request_id = id;
+  return commandMutex(commandFile, async () => {
+    const id = randomUUID();
+    command.request_id = id;
 
-  await writeMT4File(commandFile, JSON.stringify(command));
+    await writeMT4FileAtomic(commandFile, JSON.stringify(command));
 
-  const deadline = Date.now() + MT4_RESULT_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, MT4_RESULT_POLL_MS));
+    const deadline = Date.now() + MT4_RESULT_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, MT4_RESULT_POLL_MS));
+      try {
+        const raw    = await readMT4File(resultFile);
+        const result = JSON.parse(raw);
+        if (result.request_id === id) {
+          await deleteMT4File(resultFile);
+          return result;
+        }
+      } catch {
+        // File not yet written or not yet updated — keep polling
+      }
+    }
+
+    // Timeout cleanup — delete the command file so an unread command is cancelled.
+    await deleteMT4File(commandFile);
+
+    // One last result check (EA may have processed it in the final instant).
     try {
       const raw    = await readMT4File(resultFile);
       const result = JSON.parse(raw);
       if (result.request_id === id) {
-        // Consume the result file so stale data cannot be re-read
         await deleteMT4File(resultFile);
         return result;
       }
     } catch {
-      // File not yet written or not yet updated — keep polling
+      // Result not present — command was not processed in time
     }
-  }
 
-  // ── Timeout cleanup (prevents stale-command execution) ───────────────────────
-  // Attempt to delete the command file so that, if MT4 hasn't read it yet,
-  // the order is cleanly cancelled.  If delete fails the file is already gone
-  // (EA consumed it but hasn't written the result yet — see one-last-check below).
-  await deleteMT4File(commandFile);
-
-  // One last result check: EA may have processed the command in the instant
-  // between our final poll and the timeout throw.  If so, return the result
-  // rather than falsely reporting failure (which would cause the caller to retry
-  // and potentially place a duplicate order).
-  try {
-    const raw    = await readMT4File(resultFile);
-    const result = JSON.parse(raw);
-    if (result.request_id === id) {
-      await deleteMT4File(resultFile);
-      return result;
-    }
-  } catch {
-    // Result not present — command was not processed in time
-  }
-
-  throw new Error(`MT4 did not respond within ${MT4_RESULT_TIMEOUT_MS / 1000}s`);
+    throw new Error(`MT4 did not respond within ${MT4_RESULT_TIMEOUT_MS / 1000}s`);
+  });
 }
 
 // ── MetaEditor helper ─────────────────────────────────────────────────────────
@@ -285,28 +293,11 @@ app.get("/api/market/:symbol", async (req, res) => {
 
 // Place an order
 app.post("/api/order", async (req, res) => {
-  // Field validation — prevent empty/garbage from reaching MT4
-  const VALID_OPS = ["BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"];
+  const v = validateOrderRequest(req.body);
+  if (!v.ok) {
+    return res.status(400).json({ error: v.error });
+  }
   const { symbol, operation, lots, price, stop_loss, take_profit } = req.body;
-
-  if (!symbol || typeof symbol !== "string") {
-    return res.status(400).json({ error: "Missing or invalid field: symbol" });
-  }
-  if (!operation || !VALID_OPS.includes(operation)) {
-    return res.status(400).json({ error: `Missing or invalid field: operation (must be one of ${VALID_OPS.join(", ")})` });
-  }
-  if (typeof lots !== "number" || lots <= 0) {
-    return res.status(400).json({ error: "Missing or invalid field: lots (must be a positive number)" });
-  }
-  if (price == null || typeof price !== "number") {
-    return res.status(400).json({ error: "Missing or invalid field: price" });
-  }
-  if (stop_loss == null || typeof stop_loss !== "number") {
-    return res.status(400).json({ error: "Missing or invalid field: stop_loss" });
-  }
-  if (take_profit == null || typeof take_profit !== "number") {
-    return res.status(400).json({ error: "Missing or invalid field: take_profit" });
-  }
 
   try {
     const result = await sendMT4Command(
