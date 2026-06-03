@@ -878,7 +878,11 @@ string ValidateOrderCommand(string symbol, int orderType, double lots,
                             double entry, double stopLoss, double takeProfit,
                             bool allowUnprotected)
 {
-   if (allowUnprotected) return "";
+   if (allowUnprotected)
+   {
+      LogOperation("ORDER_FIREWALL_BYPASS", "allow_unprotected active — firewall checks skipped", symbol);
+      return "";
+   }
 
    bool isLong    = (orderType == OP_BUY || orderType == OP_BUYLIMIT || orderType == OP_BUYSTOP);
    bool isPending = (orderType == OP_BUYLIMIT || orderType == OP_SELLLIMIT ||
@@ -895,6 +899,11 @@ string ValidateOrderCommand(string symbol, int orderType, double lots,
    double stopLevel = MarketInfo(symbol, MODE_STOPLEVEL) * point;
    double ask       = MarketInfo(symbol, MODE_ASK);
    double bid       = MarketInfo(symbol, MODE_BID);
+
+   // NOTE: many ECN/STP accounts (incl. Pepperstone UK) report MODE_STOPLEVEL == 0,
+   // which makes the distance checks below inert (any positive distance passes).
+   // The SL/TP SIDE checks (SL<entry<TP long, inverse short) and the pending
+   // entry-vs-market side checks are the primary protection and ALWAYS apply.
 
    if (isLong)
    {
