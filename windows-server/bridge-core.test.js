@@ -5,6 +5,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { writeFileAtomic } from "./bridge-core.js";
+import { createKeyedMutex } from "./bridge-core.js";
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const validPending = {
   symbol: "EURUSD.r", operation: "BUY_LIMIT", lots: 0.1,
@@ -150,4 +153,31 @@ test("writeFileAtomic rejects a non-string content", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-atomic-"));
   const fp = path.join(dir, "order_commands.txt");
   await assert.rejects(() => writeFileAtomic(fp, { not: "a string" }), TypeError);
+});
+
+test("createKeyedMutex serializes tasks sharing a key", async () => {
+  const mutex = createKeyedMutex();
+  const events = [];
+  const a = mutex("order", async () => { events.push("A-start"); await delay(25); events.push("A-end"); });
+  const b = mutex("order", async () => { events.push("B-start"); await delay(5); events.push("B-end"); });
+  await Promise.all([a, b]);
+  assert.deepEqual(events, ["A-start", "A-end", "B-start", "B-end"]);
+});
+
+test("createKeyedMutex runs different keys concurrently", async () => {
+  const mutex = createKeyedMutex();
+  const events = [];
+  const a = mutex("order", async () => { events.push("A-start"); await delay(25); events.push("A-end"); });
+  const b = mutex("close", async () => { events.push("B-start"); await delay(5); events.push("B-end"); });
+  await Promise.all([a, b]);
+  // close (key B) finishes before order (key A) because they do not block each other
+  assert.deepEqual(events, ["A-start", "B-start", "B-end", "A-end"]);
+});
+
+test("createKeyedMutex returns the task value and isolates rejection", async () => {
+  const mutex = createKeyedMutex();
+  await assert.rejects(() => mutex("k", async () => { throw new Error("boom"); }), /boom/);
+  // a rejecting task must not poison the chain — the next task still runs
+  const v = await mutex("k", async () => 42);
+  assert.equal(v, 42);
 });

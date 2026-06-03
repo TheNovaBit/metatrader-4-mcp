@@ -82,3 +82,20 @@ export async function writeFileAtomic(filePath, content, { retries = 1, retryDel
     }
   }
 }
+
+/**
+ * Create a keyed async mutex. `run(key, fn)` runs `fn` only after every prior
+ * task with the same key has settled, and resolves/rejects with fn's outcome.
+ * Different keys never block each other. A rejecting task does not poison the
+ * chain (the stored tail swallows errors).
+ */
+export function createKeyedMutex() {
+  const tails = new Map();
+  return function run(key, fn) {
+    const prev = tails.get(key) || Promise.resolve();
+    const result = prev.then(() => fn(), () => fn());
+    // store a non-rejecting tail so the chain survives a failed task
+    tails.set(key, result.then(() => {}, () => {}));
+    return result;
+  };
+}
