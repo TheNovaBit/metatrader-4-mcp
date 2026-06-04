@@ -49,6 +49,45 @@ set PORT=8080
 npm start
 ```
 
+## Authentication
+
+The bridge **fails closed**: it will not start without an API key, and once running
+every request must carry a matching `x-api-key` header. The shared secret is the
+`BRIDGE_API_KEY` environment variable. The Python trading agent and the MCP client
+read the **same** variable, so setting it process-wide makes every consumer agree
+automatically.
+
+Startup resolves one of three modes:
+
+| Environment | Mode | Behaviour |
+|---|---|---|
+| `BRIDGE_API_KEY` set | **enforce** | Every request needs a matching `x-api-key` header; others get `401`. (Production.) |
+| no key, `BRIDGE_ALLOW_NO_AUTH=1` | **noauth** | Runs without auth and logs a warning. Local development only. |
+| no key, no opt-out | **fatal** | Refuses to start (`exit 1`) — never runs a live order bridge unauthenticated. |
+
+A configured key always wins, even if `BRIDGE_ALLOW_NO_AUTH=1` is also set.
+
+### Production (e.g. EC2)
+Set `BRIDGE_API_KEY` as a system/user environment variable so the bridge **and** the
+agent inherit it, then `npm start` runs in enforce mode:
+```cmd
+setx BRIDGE_API_KEY your-long-random-secret
+```
+
+### Local development
+Either set `BRIDGE_API_KEY` (to mirror production), or opt out of auth explicitly:
+```cmd
+REM keyless local dev — runs without auth (prints a warning)
+set BRIDGE_ALLOW_NO_AUTH=1
+npm start
+```
+To make the opt-out permanent for your user account (it is **not** a secret):
+```cmd
+setx BRIDGE_ALLOW_NO_AUTH 1
+```
+
+> Note: `setx` affects only **new** processes — reopen the terminal afterwards.
+
 ## API Endpoints
 
 ### Trading Endpoints
@@ -202,6 +241,7 @@ set MT4_DATA_PATH=C:\Your\Custom\MetaQuotes\Terminal
 
 ## Security Notes
 
+- **API-key authentication is mandatory** — the bridge fails closed if `BRIDGE_API_KEY` is unset (see [Authentication](#authentication)); use `BRIDGE_ALLOW_NO_AUTH=1` only for local development
 - The server runs on localhost by default
 - Configure firewall rules for network access
 - Validate EA source code before compilation
