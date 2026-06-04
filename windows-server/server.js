@@ -5,7 +5,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
-import { validateOrderRequest, writeFileAtomic, createKeyedMutex } from "./bridge-core.js";
+import { validateOrderRequest, writeFileAtomic, createKeyedMutex, resolveAuthConfig, isAuthorized } from "./bridge-core.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,9 +33,18 @@ const MT4_INSTALL_PATH =
 const METAEDITOR_PATHS = [MT4_INSTALL_PATH];  // must be an array — findMetaEditor() iterates it
 
 // Shared secret for API key authentication.
-// Set BRIDGE_API_KEY in the EC2 environment (and in start_trader.bat).
-// If unset the middleware is bypassed — useful during local dev, but MUST be set in production.
-const API_KEY = process.env.BRIDGE_API_KEY || "";
+// BRIDGE_API_KEY is a system env var on EC2 (inherited by both the bridge and the
+// Python agent). The bridge FAILS CLOSED: if no key is configured it refuses to
+// start — unless BRIDGE_ALLOW_NO_AUTH=1 is set, which opts out for local dev only.
+const AUTH = resolveAuthConfig(process.env);
+if (AUTH.mode === "fatal") {
+  console.error(
+    "FATAL: BRIDGE_API_KEY is not set. Refusing to start without authentication.\n" +
+    "Set BRIDGE_API_KEY in the environment, or set BRIDGE_ALLOW_NO_AUTH=1 to run " +
+    "without auth (local dev only)."
+  );
+  process.exit(1);
+}
 
 // How long (ms) to poll for a MT4 result file before timing out
 const MT4_RESULT_TIMEOUT_MS = 5000;
@@ -52,9 +61,9 @@ const BRIDGE_MAGIC_NUMBER = 20260101;
 app.use(cors({ origin: false }));
 app.use(express.json());
 
-// API key authentication — all routes require X-Api-Key header when key is configured
+// API key authentication — when enforcing, all routes require a matching X-Api-Key header.
 app.use((req, res, next) => {
-  if (API_KEY && req.headers["x-api-key"] !== API_KEY) {
+  if (AUTH.mode === "enforce" && !isAuthorized(AUTH.apiKey, req.headers["x-api-key"])) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   next();
@@ -542,8 +551,8 @@ app.get("/api/health", (req, res) => {
 app.listen(PORT, "127.0.0.1", () => {
   console.log(`MT4 HTTP Bridge running on http://127.0.0.1:${PORT}`);
   console.log(`MT4 Files path: ${MT4_FILES_PATH_OVERRIDE || MT4_DATA_PATH}`);
-  if (!API_KEY) {
-    console.warn("WARNING: BRIDGE_API_KEY is not set — running without authentication");
+  if (AUTH.mode === "noauth") {
+    console.warn("WARNING: running WITHOUT authentication (BRIDGE_ALLOW_NO_AUTH=1). Local dev only — never in production.");
   }
   console.log("Make sure MT4 is running with the MCPBridge Expert Advisor attached to a chart");
 });
