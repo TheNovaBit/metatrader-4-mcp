@@ -11,6 +11,8 @@ import axios from 'axios';
 
 const MT4_HOST = process.env.MT4_HOST || '192.168.50.161';
 const MT4_PORT = process.env.MT4_PORT || '8080';
+const API_KEY = process.env.BRIDGE_API_KEY || '';
+const authHeaders = API_KEY ? { 'x-api-key': API_KEY } : {};
 
 async function testEASync() {
   console.log('🚀 Testing Enhanced EA Sync Functionality');
@@ -35,7 +37,7 @@ async function testEASync() {
     // Test HTTP Bridge Health
     console.log('\\n🔍 Testing HTTP Bridge Connection...');
     try {
-      const healthResponse = await axios.get(`http://${MT4_HOST}:${MT4_PORT}/api/health`, { timeout: 5000 });
+      const healthResponse = await axios.get(`http://${MT4_HOST}:${MT4_PORT}/api/health`, { timeout: 5000, headers: authHeaders });
       console.log('✅ HTTP Bridge Health:', healthResponse.data);
     } catch (healthError) {
       console.log('⚠️ HTTP Bridge not available:', healthError.message);
@@ -49,7 +51,7 @@ async function testEASync() {
       const uploadResponse = await axios.post(`http://${MT4_HOST}:${MT4_PORT}/api/ea/upload`, {
         ea_name: eaName,
         ea_content: eaContent
-      }, { timeout: 30000 });
+      }, { timeout: 30000, headers: authHeaders });
       
       console.log('✅ Upload Result:', uploadResponse.data);
       
@@ -67,7 +69,7 @@ async function testEASync() {
     try {
       const compileResponse = await axios.post(`http://${MT4_HOST}:${MT4_PORT}/api/ea/compile`, {
         ea_name: eaName
-      }, { timeout: 45000 });
+      }, { timeout: 45000, headers: authHeaders });
       
       console.log('✅ Compilation Result:', compileResponse.data);
       
@@ -89,7 +91,7 @@ async function testEASync() {
     // Test EA Listing
     console.log('\\n📋 Testing EA List...');
     try {
-      const listResponse = await axios.get(`http://${MT4_HOST}:${MT4_PORT}/api/ea/list`, { timeout: 10000 });
+      const listResponse = await axios.get(`http://${MT4_HOST}:${MT4_PORT}/api/ea/list`, { timeout: 10000, headers: authHeaders });
       console.log('✅ EA List Result:', listResponse.data);
       
       if (listResponse.data.success) {

@@ -2,6 +2,8 @@ import axios from 'axios';
 
 const MT4_HOST = process.env.MT4_HOST || '192.168.50.161';
 const MT4_PORT = process.env.MT4_PORT || '8080';
+const API_KEY = process.env.BRIDGE_API_KEY || '';
+const authHeaders = API_KEY ? { 'x-api-key': API_KEY } : {};
 
 async function testConnection() {
   try {
@@ -9,7 +11,7 @@ async function testConnection() {
     
     // Test health endpoint
     const healthResponse = await axios.get(`http://${MT4_HOST}:${MT4_PORT}/api/health`, {
-      timeout: 5000
+      timeout: 5000, headers: authHeaders
     });
     
     console.log('✅ Health check successful:', healthResponse.data);
@@ -17,7 +19,7 @@ async function testConnection() {
     // Test account info (this will fail if MT4 is not running with EA)
     try {
       const accountResponse = await axios.get(`http://${MT4_HOST}:${MT4_PORT}/api/account`, {
-        timeout: 5000
+        timeout: 5000, headers: authHeaders
       });
       console.log('✅ Account info retrieved:', accountResponse.data);
     } catch (error) {
