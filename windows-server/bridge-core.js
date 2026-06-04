@@ -120,8 +120,9 @@ export function createKeyedMutex() {
  * env var verbatim, so the bridge must not trim a real key or auth would mismatch.
  */
 export function resolveAuthConfig(env) {
-  const apiKey      = String(env.BRIDGE_API_KEY ?? "");
-  const allowNoAuth = env.BRIDGE_ALLOW_NO_AUTH === "1";
+  const src         = env || {};
+  const apiKey      = String(src.BRIDGE_API_KEY ?? "");
+  const allowNoAuth = src.BRIDGE_ALLOW_NO_AUTH === "1";
   if (apiKey.trim() !== "") return { mode: "enforce", apiKey };
   if (allowNoAuth)          return { mode: "noauth", apiKey: "" };
   return { mode: "fatal", apiKey: "" };
@@ -130,6 +131,7 @@ export function resolveAuthConfig(env) {
 /**
  * Whether a request is authorized. Pure boolean.
  * False unless a non-empty key is configured AND the provided header matches it exactly.
+ * A missing or non-string providedHeader (e.g. undefined/null) always yields false.
  */
 export function isAuthorized(configuredKey, providedHeader) {
   return typeof configuredKey === "string" && configuredKey.length > 0

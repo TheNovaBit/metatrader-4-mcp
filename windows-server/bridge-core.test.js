@@ -256,3 +256,15 @@ test("isAuthorized is false when the configured key is empty", () => {
 test("isAuthorized is false when the provided header is undefined", () => {
   assert.equal(isAuthorized("secret123", undefined), false);
 });
+
+test("resolveAuthConfig treats a null env as fatal (fail closed, no throw)", () => {
+  assert.deepEqual(resolveAuthConfig(null), { mode: "fatal", apiKey: "" });
+});
+
+test("resolveAuthConfig treats an undefined env as fatal (fail closed, no throw)", () => {
+  assert.deepEqual(resolveAuthConfig(undefined), { mode: "fatal", apiKey: "" });
+});
+
+test("isAuthorized is false when the provided header is null", () => {
+  assert.equal(isAuthorized("secret123", null), false);
+});
