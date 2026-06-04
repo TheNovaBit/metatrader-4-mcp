@@ -16,6 +16,7 @@ class MT4MCPServer {
   private mt4Host: string;
   private mt4Port: number;
   private reportsPath: string;
+  private apiKey: string;
 
   constructor() {
     this.server = new Server(
@@ -36,7 +37,10 @@ class MT4MCPServer {
     
     // Path for EA reports and status files (configurable via environment)
     this.reportsPath = process.env.MT4_REPORTS_PATH || "/tmp/mt4_reports";
-    
+
+    // Shared secret matching the bridge's BRIDGE_API_KEY (sent as the x-api-key header).
+    this.apiKey = process.env.BRIDGE_API_KEY || "";
+
     this.setupToolHandlers();
   }
 
@@ -349,9 +353,10 @@ class MT4MCPServer {
         console.error(`Request data: ${JSON.stringify(data)}`);
       }
       
-      const response = data 
-        ? await axios.post(url, data, { timeout: 30000 })
-        : await axios.get(url, { timeout: 30000 });
+      const headers: Record<string, string> = this.apiKey ? { "x-api-key": this.apiKey } : {};
+      const response = data
+        ? await axios.post(url, data, { timeout: 30000, headers })
+        : await axios.get(url, { timeout: 30000, headers });
       
       console.error(`Response status: ${response.status}`);
       console.error(`Response data: ${JSON.stringify(response.data)}`);
