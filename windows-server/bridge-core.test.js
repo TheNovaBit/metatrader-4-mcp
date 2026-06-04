@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { writeFileAtomic } from "./bridge-core.js";
 import { createKeyedMutex } from "./bridge-core.js";
+import { resolveAuthConfig, isAuthorized } from "./bridge-core.js";
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -186,4 +187,72 @@ test("createKeyedMutex returns the task value and isolates rejection", async () 
   // a rejecting task must not poison the chain — the next task still runs
   const v = await mutex("k", async () => 42);
   assert.equal(v, 42);
+});
+
+// ── resolveAuthConfig ──────────────────────────────────────────────────────────
+
+test("resolveAuthConfig returns enforce when BRIDGE_API_KEY is set", () => {
+  assert.deepEqual(
+    resolveAuthConfig({ BRIDGE_API_KEY: "secret123" }),
+    { mode: "enforce", apiKey: "secret123" }
+  );
+});
+
+test("resolveAuthConfig returns noauth when key absent but BRIDGE_ALLOW_NO_AUTH=1", () => {
+  assert.deepEqual(
+    resolveAuthConfig({ BRIDGE_ALLOW_NO_AUTH: "1" }),
+    { mode: "noauth", apiKey: "" }
+  );
+});
+
+test("resolveAuthConfig returns fatal when key absent and no opt-out", () => {
+  assert.deepEqual(resolveAuthConfig({}), { mode: "fatal", apiKey: "" });
+});
+
+test("resolveAuthConfig: a configured key wins even if BRIDGE_ALLOW_NO_AUTH=1", () => {
+  assert.deepEqual(
+    resolveAuthConfig({ BRIDGE_API_KEY: "secret123", BRIDGE_ALLOW_NO_AUTH: "1" }),
+    { mode: "enforce", apiKey: "secret123" }
+  );
+});
+
+test("resolveAuthConfig: a whitespace-only key is treated as unset (fatal)", () => {
+  assert.deepEqual(
+    resolveAuthConfig({ BRIDGE_API_KEY: "   " }),
+    { mode: "fatal", apiKey: "" }
+  );
+});
+
+test("resolveAuthConfig: BRIDGE_ALLOW_NO_AUTH other than '1' does not opt out (fatal)", () => {
+  assert.deepEqual(
+    resolveAuthConfig({ BRIDGE_ALLOW_NO_AUTH: "true" }),
+    { mode: "fatal", apiKey: "" }
+  );
+});
+
+test("resolveAuthConfig preserves the RAW key value (never trims a real key)", () => {
+  // The Python agent reads BRIDGE_API_KEY verbatim, so the bridge must compare the
+  // raw value — trimming a real key would cause an auth mismatch.
+  assert.deepEqual(
+    resolveAuthConfig({ BRIDGE_API_KEY: " spaced-key " }),
+    { mode: "enforce", apiKey: " spaced-key " }
+  );
+});
+
+// ── isAuthorized ───────────────────────────────────────────────────────────────
+
+test("isAuthorized is true only when a non-empty key matches the header", () => {
+  assert.equal(isAuthorized("secret123", "secret123"), true);
+});
+
+test("isAuthorized is false on a mismatched header", () => {
+  assert.equal(isAuthorized("secret123", "wrong"), false);
+});
+
+test("isAuthorized is false when the configured key is empty", () => {
+  assert.equal(isAuthorized("", ""), false);
+});
+
+test("isAuthorized is false when the provided header is undefined", () => {
+  assert.equal(isAuthorized("secret123", undefined), false);
 });

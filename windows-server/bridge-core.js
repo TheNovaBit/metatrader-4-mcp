@@ -105,3 +105,33 @@ export function createKeyedMutex() {
     return result;
   };
 }
+
+/**
+ * Decide the bridge's startup auth posture from the environment.
+ * Pure: no IO, no process.exit — server.js acts on the returned mode.
+ *
+ *   mode "enforce" — a key is configured; the auth middleware is active.
+ *   mode "noauth"  — no key, but BRIDGE_ALLOW_NO_AUTH=1 explicitly opts out (local dev).
+ *   mode "fatal"   — no key and no opt-out; server.js must refuse to start.
+ *
+ * A configured key always wins, even if BRIDGE_ALLOW_NO_AUTH is also set.
+ * Emptiness is decided on a trimmed view (so a whitespace-only value counts as
+ * unset), but the RAW value is stored and compared — the Python agent reads the
+ * env var verbatim, so the bridge must not trim a real key or auth would mismatch.
+ */
+export function resolveAuthConfig(env) {
+  const apiKey      = String(env.BRIDGE_API_KEY ?? "");
+  const allowNoAuth = env.BRIDGE_ALLOW_NO_AUTH === "1";
+  if (apiKey.trim() !== "") return { mode: "enforce", apiKey };
+  if (allowNoAuth)          return { mode: "noauth", apiKey: "" };
+  return { mode: "fatal", apiKey: "" };
+}
+
+/**
+ * Whether a request is authorized. Pure boolean.
+ * False unless a non-empty key is configured AND the provided header matches it exactly.
+ */
+export function isAuthorized(configuredKey, providedHeader) {
+  return typeof configuredKey === "string" && configuredKey.length > 0
+      && providedHeader === configuredKey;
+}
