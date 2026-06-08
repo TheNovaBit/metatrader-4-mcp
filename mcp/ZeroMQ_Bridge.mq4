@@ -37,6 +37,13 @@ extern int    OrderRepPort      = 5557;       // REP port  (orders ← Python) �
 extern string SymbolList        = "EURUSD.r,GBPUSD.r,USDJPY.r,NZDUSD.r,CADJPY.r,AUDUSD.r,USDCHF.r,GBPAUD.r,GBPJPY.r";
 extern int    MagicNumber       = 20260200;   // scalper magic (swing uses 20260101)
 extern string SymbolListFile    = "symbols.txt";   // file under MQL4\Files\ — blank to disable runtime load
+// EnablePush=false makes this a REP-only bridge (history/orders), skipping all
+// PUSH sends. A ZMQ PUSH socket with no connected consumer BLOCKS on send (mute
+// state), which hangs OnTimer before the REP drain and kills REP. The file-based
+// swing agent never consumes the PUSH stream, so it runs this bridge with
+// EnablePush=false (history side-channel only). Leave true for the scalper and
+// for a future direct-ZMQ agent that PULLs the data stream.
+extern bool   EnablePush        = true;       // false = REP-only (no data PUSH)
 
 // ---------------------------------------------------------------------------
 // ZMQ context and sockets (module-level; created once)
@@ -134,7 +141,9 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
-   if (TimeCurrent() - g_lastPush >= UpdateIntervalSec)
+   // PUSH is gated: a consumer-less PUSH send blocks (mute state) and would
+   // stall this loop before the REP drain. EnablePush=false => pure REP bridge.
+   if (EnablePush && TimeCurrent() - g_lastPush >= UpdateIntervalSec)
    {
       PushAllData();
       g_lastPush = TimeCurrent();
