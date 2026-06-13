@@ -389,3 +389,253 @@ string BuildPositionsJson()
    j += "}";
    return j;
 }
+
+string ExtractJsonValue(string json, string key)
+{
+   string sk = "\"" + key + "\":";
+   int sp = StringFind(json, sk);
+   if (sp < 0) return "";
+   sp += StringLen(sk);
+   while (sp < StringLen(json) && StringGetChar(json, sp) == ' ') sp++;
+   int ep = sp;
+   if (sp < StringLen(json) && StringGetChar(json, sp) == '"')
+   {
+      sp++; ep = sp;
+      while (ep < StringLen(json) && StringGetChar(json, ep) != '"') ep++;
+   }
+   else
+   {
+      while (ep < StringLen(json))
+      {
+         ushort c = StringGetChar(json, ep);
+         if (c == ',' || c == '}') break;
+         ep++;
+      }
+   }
+   return StringSubstr(json, sp, ep - sp);
+}
+
+bool ProcessREPOnce()
+{
+   ZmqMsg request;
+   if (!g_rep.recv(request, true)) return false;   // NOBLOCK
+   string cmd = request.getData();
+   string resp = ProcessCommand(cmd);
+   g_rep.send(resp);
+   return true;
+}
+
+string ProcessCommand(string cmd)
+{
+   string a = ExtractJsonValue(cmd, "cmd");
+   if (a == "ping")             return "{\"success\":true,\"type\":\"pong\"}";
+   if (a == "place_order")      return HandlePlaceOrder(cmd);
+   if (a == "close")            return HandleClose(cmd);
+   if (a == "modify")           return HandleModify(cmd);
+   if (a == "history")          return HandleHistory(cmd);
+   if (a == "discover")         return HandleDiscover(cmd);
+   return StringFormat("{\"success\":false,\"error\":\"unknown cmd: %s\"}", a);
+}
+
+string HandlePlaceOrder(string cmd)
+{
+   string symbol = ExtractJsonValue(cmd, "symbol");
+   string op     = ExtractJsonValue(cmd, "operation");
+   double lots   = StringToDouble(ExtractJsonValue(cmd, "lots"));
+   double price  = StringToDouble(ExtractJsonValue(cmd, "price"));
+   double sl     = StringToDouble(ExtractJsonValue(cmd, "stop_loss"));
+   double tp     = StringToDouble(ExtractJsonValue(cmd, "take_profit"));
+   string comment= ExtractJsonValue(cmd, "comment");
+
+   if (!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+      return "{\"success\":false,\"error\":\"AutoTrading disabled\"}";
+
+   // Normalise lots to broker constraints
+   double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   double mn   = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double mx   = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   if (step > 0) lots = MathFloor(lots / step) * step;
+   lots = MathMax(mn, MathMin(mx, lots));
+
+   // Idempotency — suppress duplicate by matching comment+magic on open positions
+   for (int i = 0; i < PositionsTotal(); i++)
+   {
+      ulong t = PositionGetTicket(i);
+      if (t == 0 || !PositionSelectByTicket(t)) continue;
+      if (PositionGetString(POSITION_SYMBOL) == symbol &&
+          PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
+          StringLen(comment) > 0 &&
+          StringFind(PositionGetString(POSITION_COMMENT), comment) >= 0)
+         return StringFormat("{\"success\":true,\"ticket\":%I64u,\"duplicate\":true,\"symbol\":\"%s\"}", t, symbol);
+   }
+
+   g_trade.SetTypeFillingBySymbol(symbol);
+   bool ok = false;
+   if      (op == "BUY")        ok = g_trade.Buy (lots, symbol, 0.0, sl, tp, comment);
+   else if (op == "SELL")       ok = g_trade.Sell(lots, symbol, 0.0, sl, tp, comment);
+   else if (op == "BUY_LIMIT")  ok = g_trade.BuyLimit (lots, price, symbol, sl, tp, ORDER_TIME_GTC, 0, comment);
+   else if (op == "SELL_LIMIT") ok = g_trade.SellLimit(lots, price, symbol, sl, tp, ORDER_TIME_GTC, 0, comment);
+   else if (op == "BUY_STOP")   ok = g_trade.BuyStop  (lots, price, symbol, sl, tp, ORDER_TIME_GTC, 0, comment);
+   else if (op == "SELL_STOP")  ok = g_trade.SellStop (lots, price, symbol, sl, tp, ORDER_TIME_GTC, 0, comment);
+   else return StringFormat("{\"success\":false,\"error\":\"invalid operation: %s\"}", op);
+
+   if (ok && (g_trade.ResultRetcode() == TRADE_RETCODE_DONE ||
+              g_trade.ResultRetcode() == TRADE_RETCODE_PLACED))
+   {
+      return StringFormat(
+         "{\"success\":true,\"ticket\":%I64u,\"symbol\":\"%s\",\"operation\":\"%s\","
+         "\"lots\":%.2f,\"open_price\":%.5f}",
+         g_trade.ResultOrder(), symbol, op, lots, g_trade.ResultPrice());
+   }
+   return StringFormat(
+      "{\"success\":false,\"error\":%d,\"description\":\"%s\",\"symbol\":\"%s\"}",
+      g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription(), symbol);
+}
+
+string HandleClose(string cmd)
+{
+   ulong  ticket  = (ulong)StringToInteger(ExtractJsonValue(cmd, "ticket"));
+   double reqLots = StringToDouble(ExtractJsonValue(cmd, "lots"));   // 0 = full
+
+   // Pending order? delete it.
+   if (OrderSelect(ticket))
+   {
+      if (g_trade.OrderDelete(ticket))
+         return StringFormat("{\"success\":true,\"ticket\":%I64u,\"deleted\":true}", ticket);
+      return StringFormat("{\"success\":false,\"ticket\":%I64u,\"error\":%d}", ticket, g_trade.ResultRetcode());
+   }
+
+   if (!PositionSelectByTicket(ticket))
+      return StringFormat("{\"success\":false,\"ticket\":%I64u,\"error\":\"not found\"}", ticket);
+
+   double full = PositionGetDouble(POSITION_VOLUME);
+   bool ok;
+   if (reqLots > 0 && reqLots < full)
+   {
+      string sym = PositionGetString(POSITION_SYMBOL);
+      double step = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+      double mn   = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+      double cl   = MathMax(mn, MathFloor(reqLots / step) * step);
+      ok = g_trade.PositionClosePartial(ticket, cl);
+   }
+   else ok = g_trade.PositionClose(ticket);
+
+   if (ok && (g_trade.ResultRetcode() == TRADE_RETCODE_DONE ||
+              g_trade.ResultRetcode() == TRADE_RETCODE_PLACED))
+      return StringFormat("{\"success\":true,\"ticket\":%I64u,\"close_price\":%.5f}", ticket, g_trade.ResultPrice());
+   return StringFormat("{\"success\":false,\"ticket\":%I64u,\"error\":%d}", ticket, g_trade.ResultRetcode());
+}
+
+string HandleModify(string cmd)
+{
+   ulong  ticket = (ulong)StringToInteger(ExtractJsonValue(cmd, "ticket"));
+   double sl     = StringToDouble(ExtractJsonValue(cmd, "stop_loss"));
+   double tp     = StringToDouble(ExtractJsonValue(cmd, "take_profit"));
+   if (!PositionSelectByTicket(ticket))
+      return StringFormat("{\"success\":false,\"ticket\":%I64u,\"error\":\"not found\"}", ticket);
+   if (g_trade.PositionModify(ticket, sl, tp))
+      return StringFormat("{\"success\":true,\"ticket\":%I64u,\"sl\":%.5f,\"tp\":%.5f}", ticket, sl, tp);
+   return StringFormat("{\"success\":false,\"ticket\":%I64u,\"error\":%d}", ticket, g_trade.ResultRetcode());
+}
+
+ENUM_TIMEFRAMES TfFromStr(string tf)
+{
+   if (tf == "M5")  return PERIOD_M5;
+   if (tf == "M15") return PERIOD_M15;
+   if (tf == "H1")  return PERIOD_H1;
+   if (tf == "H4")  return PERIOD_H4;
+   return PERIOD_D1;
+}
+
+string HandleHistory(string cmd)
+{
+   string sym = ExtractJsonValue(cmd, "symbol");
+   ENUM_TIMEFRAMES tf = TfFromStr(ExtractJsonValue(cmd, "timeframe"));
+   int count = (int)StringToInteger(ExtractJsonValue(cmd, "count"));
+   if (count <= 0 || count > HistoryMaxBars) count = HistoryMaxBars;
+
+   MqlRates r[];
+   ArraySetAsSeries(r, false);
+   int got = CopyRates(sym, tf, 0, count, r);
+   if (got <= 0)
+      return StringFormat("{\"success\":false,\"symbol\":\"%s\",\"error\":\"no bars\"}", sym);
+
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   string bars = "";
+   for (int i = 0; i < got; i++)
+   {
+      if (i > 0) bars += ",";
+      bars += StringFormat("{\"t\":%I64d,\"o\":%s,\"h\":%s,\"l\":%s,\"c\":%s,\"v\":%I64d}",
+              (long)r[i].time,
+              DoubleToString(r[i].open,  digits),
+              DoubleToString(r[i].high,  digits),
+              DoubleToString(r[i].low,   digits),
+              DoubleToString(r[i].close, digits),
+              r[i].tick_volume);
+   }
+   return StringFormat("{\"type\":\"history\",\"success\":true,\"symbol\":\"%s\",\"count\":%d,\"bars\":[%s]}",
+                       sym, got, bars);
+}
+
+// Build one discover row (a JSON object string) for symbol sym.
+string DiscoverRow(string sym)
+{
+   string r = "{";
+   r += JStr("symbol", sym) + ",";
+   r += JStr("path", SymbolInfoString(sym, SYMBOL_PATH)) + ",";
+   r += JStr("asset_class", ClassifyAsset(sym)) + ",";
+   r += JStr("description", SymbolInfoString(sym, SYMBOL_DESCRIPTION)) + ",";
+   r += JStr("trade_mode", IntegerToString(SymbolInfoInteger(sym, SYMBOL_TRADE_MODE))) + ",";
+   r += JStr("digits", IntegerToString(SymbolInfoInteger(sym, SYMBOL_DIGITS))) + ",";
+   r += JStr("point", DoubleToString(SymbolInfoDouble(sym, SYMBOL_POINT), 8)) + ",";
+   r += JStr("contract_size", DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_CONTRACT_SIZE), 2)) + ",";
+   r += JStr("min_lot", DoubleToString(SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN), 2)) + ",";
+   r += JStr("max_lot", DoubleToString(SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX), 2)) + ",";
+   r += JStr("lot_step", DoubleToString(SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP), 2)) + ",";
+   r += JStr("tick_value", DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE), 5)) + ",";
+   r += JStr("tick_size", DoubleToString(SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE), 8)) + ",";
+   r += JStr("margin_initial", DoubleToString(SymbolInfoDouble(sym, SYMBOL_MARGIN_INITIAL), 2)) + ",";
+   r += JStr("swap_long", DoubleToString(SymbolInfoDouble(sym, SYMBOL_SWAP_LONG), 4)) + ",";
+   r += JStr("swap_short", DoubleToString(SymbolInfoDouble(sym, SYMBOL_SWAP_SHORT), 4)) + ",";
+   r += JStr("swap_mode", IntegerToString(SymbolInfoInteger(sym, SYMBOL_SWAP_MODE))) + ",";
+   r += JStr("currency_base", SymbolInfoString(sym, SYMBOL_CURRENCY_BASE)) + ",";
+   r += JStr("currency_profit", SymbolInfoString(sym, SYMBOL_CURRENCY_PROFIT)) + ",";
+   r += JStr("currency_margin", SymbolInfoString(sym, SYMBOL_CURRENCY_MARGIN)) + ",";
+   r += JStr("sector", IntegerToString(SymbolInfoInteger(sym, SYMBOL_SECTOR))) + ",";
+   r += JStr("industry", IntegerToString(SymbolInfoInteger(sym, SYMBOL_INDUSTRY))) + ",";
+   r += JStr("expiration_time", IntegerToString(SymbolInfoInteger(sym, SYMBOL_EXPIRATION_TIME)));
+   r += "}";
+   return r;
+}
+
+// Rebuild the discover cache from the FULL broker symbol tree (selected=false).
+void BuildDiscoverCache()
+{
+   int total = SymbolsTotal(false);
+   ArrayResize(g_discoverRows, total);
+   for (int i = 0; i < total; i++)
+      g_discoverRows[i] = DiscoverRow(SymbolName(i, false));
+   g_discoverCount = total;
+}
+
+string HandleDiscover(string cmd)
+{
+   string chunkStr = ExtractJsonValue(cmd, "chunk");
+   int chunk = StringLen(chunkStr) > 0 ? (int)StringToInteger(chunkStr) : 0;
+   if (chunk == 0) BuildDiscoverCache();   // (re)build on first chunk
+
+   int chunks = (g_discoverCount + DiscoverChunkSize - 1) / DiscoverChunkSize;
+   if (chunks == 0) chunks = 1;
+   int start = chunk * DiscoverChunkSize;
+   int end   = MathMin(start + DiscoverChunkSize, g_discoverCount);
+
+   string arr = "";
+   for (int i = start; i < end; i++)
+   {
+      if (i > start) arr += ",";
+      arr += g_discoverRows[i];
+   }
+   return StringFormat(
+      "{\"type\":\"discover\",\"success\":true,\"count\":%d,\"chunk\":%d,\"chunks\":%d,\"symbols\":[%s]}",
+      g_discoverCount, chunk, chunks, arr);
+}
