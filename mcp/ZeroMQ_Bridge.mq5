@@ -33,7 +33,7 @@ Socket  g_push(g_ctx, ZMQ_PUSH);
 Socket  g_rep(g_ctx, ZMQ_REP);
 CTrade  g_trade;
 
-datetime g_lastPush = 0;
+ulong    g_lastPushMs = 0;   // wall-clock (GetTickCount64) — NOT server time, which freezes when the market is closed
 string   g_symbols[];     // parsed symbol list
 
 // discover paging cache — built on chunk 0, served across chunk requests
@@ -184,10 +184,10 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
-   if (EnablePush && TimeCurrent() - g_lastPush >= UpdateIntervalSec)
+   if (EnablePush && GetTickCount64() - g_lastPushMs >= (ulong)UpdateIntervalSec * 1000)
    {
       PushAllData();
-      g_lastPush = TimeCurrent();
+      g_lastPushMs = GetTickCount64();
    }
    while (ProcessREPOnce()) {}
 }
