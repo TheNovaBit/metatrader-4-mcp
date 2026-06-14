@@ -116,18 +116,26 @@ void LoadSymbols()
    }
 }
 
-// Classify asset class from path + expiration (mirrors spec §6 rule).
+// Classify asset class from broker path (mirrors mt5_client_zmq.derive_asset_class).
+// Pepperstone paths: Retail\Forwards\Bonds\EUBund-F, Retail\Stocks\UK\AAL.GB, etc.
+// Forward CFDs (-F) live under \Forwards\ but have expiration_time=0, so path wins.
+// Order: Forwards before Commodities (energy forwards contain both); metals before
+// commodities (silver/gold sit under \Commodities\).
 string ClassifyAsset(string sym)
 {
-   if ((datetime)SymbolInfoInteger(sym, SYMBOL_EXPIRATION_TIME) > 0) return "forward";
-   string p = SymbolInfoString(sym, SYMBOL_PATH);
-   string lp = p; StringToLower(lp);
-   if (StringFind(lp, "stock") >= 0 || StringFind(lp, "share") >= 0) return "stock";
-   if (StringFind(lp, "etf")   >= 0)                                 return "etf";
-   if (StringFind(lp, "forex") >= 0 || StringFind(lp, "\\fx") >= 0)  return "fx";
-   if (StringFind(lp, "metal") >= 0 || StringFind(lp, "xau") >= 0
-       || StringFind(lp, "xag") >= 0)                                return "metal";
-   if (StringFind(lp, "ind")   >= 0 || StringFind(lp, "cash") >= 0)  return "index";
+   string lp = SymbolInfoString(sym, SYMBOL_PATH); StringToLower(lp);
+   if (StringFind(lp, "\\forwards\\") >= 0
+       || (datetime)SymbolInfoInteger(sym, SYMBOL_EXPIRATION_TIME) > 0)  return "forward";
+   if (StringFind(lp, "\\stocks\\") >= 0 || StringFind(lp, "\\shares\\") >= 0) return "stock";
+   if (StringFind(lp, "\\etfs\\") >= 0)                                  return "etf";
+   if (StringFind(lp, "\\forex\\") >= 0 || StringFind(lp, "\\fx\\") >= 0) return "fx";
+   if (StringFind(lp, "\\silver\\") >= 0 || StringFind(lp, "\\gold\\") >= 0
+       || StringFind(lp, "\\metals\\") >= 0
+       || StringFind(lp, "xau") >= 0 || StringFind(lp, "xag") >= 0)      return "metal";
+   if (StringFind(lp, "\\commodit") >= 0 || StringFind(lp, "\\energ") >= 0
+       || StringFind(lp, "\\softs\\") >= 0)                             return "commodity";
+   if (StringFind(lp, "\\indices\\") >= 0 || StringFind(lp, "\\index\\") >= 0
+       || StringFind(lp, "\\cash") >= 0)                               return "index";
    return "unknown";
 }
 
@@ -186,15 +194,19 @@ void OnTimer()
 
 void PushAllData()
 {
+   // Non-blocking sends (nowait=true): if no Python PULL consumer is connected,
+   // PUSH would otherwise BLOCK in mute state and starve the REP/order drain in
+   // OnTimer (a live order command could hang). Dropping a data tick is safe —
+   // the client keeps a latest-value cache — but order responsiveness is not.
    for (int i = 0; i < ArraySize(g_symbols); i++)
    {
       string sym = g_symbols[i];
       if (StringLen(sym) == 0) continue;
       string js = BuildSymbolJson(sym);
-      if (StringLen(js) > 2) { ZmqMsg m(js); g_push.send(m); }
+      if (StringLen(js) > 2) { ZmqMsg m(js); g_push.send(m, true); }
    }
-   ZmqMsg am(BuildAccountJson());   g_push.send(am);
-   ZmqMsg pm(BuildPositionsJson()); g_push.send(pm);
+   ZmqMsg am(BuildAccountJson());   g_push.send(am, true);
+   ZmqMsg pm(BuildPositionsJson()); g_push.send(pm, true);
 }
 
 string BuildSymbolJson(string sym)
