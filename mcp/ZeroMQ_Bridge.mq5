@@ -100,7 +100,7 @@ void LoadSymbols()
             string line = FileReadString(fh);
             StringTrimLeft(line); StringTrimRight(line);
             if (StringLen(line) == 0) continue;
-            if (StringGetChar(line, 0) == '#') continue;
+            if (StringGetCharacter(line, 0) == '#') continue;
             if (cnt > 0) acc += ",";
             acc += line; cnt++;
          }
@@ -396,18 +396,18 @@ string ExtractJsonValue(string json, string key)
    int sp = StringFind(json, sk);
    if (sp < 0) return "";
    sp += StringLen(sk);
-   while (sp < StringLen(json) && StringGetChar(json, sp) == ' ') sp++;
+   while (sp < StringLen(json) && StringGetCharacter(json, sp) == ' ') sp++;
    int ep = sp;
-   if (sp < StringLen(json) && StringGetChar(json, sp) == '"')
+   if (sp < StringLen(json) && StringGetCharacter(json, sp) == '"')
    {
       sp++; ep = sp;
-      while (ep < StringLen(json) && StringGetChar(json, ep) != '"') ep++;
+      while (ep < StringLen(json) && StringGetCharacter(json, ep) != '"') ep++;
    }
    else
    {
       while (ep < StringLen(json))
       {
-         ushort c = StringGetChar(json, ep);
+         ushort c = StringGetCharacter(json, ep);
          if (c == ',' || c == '}') break;
          ep++;
       }
