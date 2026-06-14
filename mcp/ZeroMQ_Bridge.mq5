@@ -333,7 +333,11 @@ string BuildAccountJson()
    j += JStr("Margin",    DoubleToString(mg, 2)) + ",";
    j += JStr("FreeMargin",DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_FREE), 2)) + ",";
    j += JStr("MarginLevel",DoubleToString(ml, 2)) + ",";
-   j += JStr("Leverage",  IntegerToString(AccountInfoInteger(ACCOUNT_LEVERAGE)));
+   j += JStr("Leverage",  IntegerToString(AccountInfoInteger(ACCOUNT_LEVERAGE))) + ",";
+   long marginMode = AccountInfoInteger(ACCOUNT_MARGIN_MODE);
+   string marginModeStr = (marginMode == ACCOUNT_MARGIN_MODE_RETAIL_NETTING) ? "netting"
+                        : (marginMode == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) ? "hedging" : "exchange";
+   j += JStr("MarginMode", marginModeStr);
    j += "}";
    return j;
 }
@@ -617,6 +621,10 @@ string DiscoverRow(string sym)
    r += JStr("currency_margin", SymbolInfoString(sym, SYMBOL_CURRENCY_MARGIN)) + ",";
    r += JStr("sector", IntegerToString(SymbolInfoInteger(sym, SYMBOL_SECTOR))) + ",";
    r += JStr("industry", IntegerToString(SymbolInfoInteger(sym, SYMBOL_INDUSTRY))) + ",";
+   // SYMBOL_MARGIN_INITIAL is 0 on Pepperstone; the real leverage comes from the margin RATE.
+   double mrInit = 0.0, mrMaint = 0.0;
+   SymbolInfoMarginRate(sym, ORDER_TYPE_BUY, mrInit, mrMaint);
+   r += JStr("margin_rate", DoubleToString(mrInit, 6)) + ",";
    r += JStr("expiration_time", IntegerToString(SymbolInfoInteger(sym, SYMBOL_EXPIRATION_TIME)));
    r += "}";
    return r;
