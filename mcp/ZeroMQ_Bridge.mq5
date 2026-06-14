@@ -466,7 +466,7 @@ string HandlePlaceOrder(string cmd)
           PositionGetInteger(POSITION_MAGIC) == MagicNumber &&
           StringLen(comment) > 0 &&
           StringFind(PositionGetString(POSITION_COMMENT), comment) >= 0)
-         return StringFormat("{\"success\":true,\"ticket\":%I64u,\"duplicate\":true,\"symbol\":\"%s\"}", t, symbol);
+         return StringFormat("{\"success\":true,\"ticket\":%s,\"duplicate\":true,\"symbol\":\"%s\"}", IntegerToString((long)t), symbol);
    }
 
    g_trade.SetTypeFillingBySymbol(symbol);
@@ -483,13 +483,15 @@ string HandlePlaceOrder(string cmd)
               g_trade.ResultRetcode() == TRADE_RETCODE_PLACED))
    {
       return StringFormat(
-         "{\"success\":true,\"ticket\":%I64u,\"symbol\":\"%s\",\"operation\":\"%s\","
-         "\"lots\":%.2f,\"open_price\":%.5f}",
-         g_trade.ResultOrder(), symbol, op, lots, g_trade.ResultPrice());
+         "{\"success\":true,\"ticket\":%s,\"symbol\":\"%s\",\"operation\":\"%s\","
+         "\"lots\":%s,\"open_price\":%s}",
+         IntegerToString((long)g_trade.ResultOrder()), symbol, op,
+         DoubleToString(lots, 2), DoubleToString(g_trade.ResultPrice(), 5));
    }
    return StringFormat(
-      "{\"success\":false,\"error\":%d,\"description\":\"%s\",\"symbol\":\"%s\"}",
-      g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription(), symbol);
+      "{\"success\":false,\"error\":%s,\"description\":\"%s\",\"symbol\":\"%s\"}",
+      IntegerToString((int)g_trade.ResultRetcode()),
+      JsonEscape(g_trade.ResultRetcodeDescription()), symbol);
 }
 
 string HandleClose(string cmd)
@@ -501,12 +503,12 @@ string HandleClose(string cmd)
    if (OrderSelect(ticket))
    {
       if (g_trade.OrderDelete(ticket))
-         return StringFormat("{\"success\":true,\"ticket\":%I64u,\"deleted\":true}", ticket);
-      return StringFormat("{\"success\":false,\"ticket\":%I64u,\"error\":%d}", ticket, g_trade.ResultRetcode());
+         return StringFormat("{\"success\":true,\"ticket\":%s,\"deleted\":true}", IntegerToString((long)ticket));
+      return StringFormat("{\"success\":false,\"ticket\":%s,\"error\":%s}", IntegerToString((long)ticket), IntegerToString((int)g_trade.ResultRetcode()));
    }
 
    if (!PositionSelectByTicket(ticket))
-      return StringFormat("{\"success\":false,\"ticket\":%I64u,\"error\":\"not found\"}", ticket);
+      return StringFormat("{\"success\":false,\"ticket\":%s,\"error\":\"not found\"}", IntegerToString((long)ticket));
 
    double full = PositionGetDouble(POSITION_VOLUME);
    bool ok;
@@ -522,8 +524,8 @@ string HandleClose(string cmd)
 
    if (ok && (g_trade.ResultRetcode() == TRADE_RETCODE_DONE ||
               g_trade.ResultRetcode() == TRADE_RETCODE_PLACED))
-      return StringFormat("{\"success\":true,\"ticket\":%I64u,\"close_price\":%.5f}", ticket, g_trade.ResultPrice());
-   return StringFormat("{\"success\":false,\"ticket\":%I64u,\"error\":%d}", ticket, g_trade.ResultRetcode());
+      return StringFormat("{\"success\":true,\"ticket\":%s,\"close_price\":%s}", IntegerToString((long)ticket), DoubleToString(g_trade.ResultPrice(), 5));
+   return StringFormat("{\"success\":false,\"ticket\":%s,\"error\":%s}", IntegerToString((long)ticket), IntegerToString((int)g_trade.ResultRetcode()));
 }
 
 string HandleModify(string cmd)
@@ -532,10 +534,10 @@ string HandleModify(string cmd)
    double sl     = StringToDouble(ExtractJsonValue(cmd, "stop_loss"));
    double tp     = StringToDouble(ExtractJsonValue(cmd, "take_profit"));
    if (!PositionSelectByTicket(ticket))
-      return StringFormat("{\"success\":false,\"ticket\":%I64u,\"error\":\"not found\"}", ticket);
+      return StringFormat("{\"success\":false,\"ticket\":%s,\"error\":\"not found\"}", IntegerToString((long)ticket));
    if (g_trade.PositionModify(ticket, sl, tp))
-      return StringFormat("{\"success\":true,\"ticket\":%I64u,\"sl\":%.5f,\"tp\":%.5f}", ticket, sl, tp);
-   return StringFormat("{\"success\":false,\"ticket\":%I64u,\"error\":%d}", ticket, g_trade.ResultRetcode());
+      return StringFormat("{\"success\":true,\"ticket\":%s,\"sl\":%s,\"tp\":%s}", IntegerToString((long)ticket), DoubleToString(sl, 5), DoubleToString(tp, 5));
+   return StringFormat("{\"success\":false,\"ticket\":%s,\"error\":%s}", IntegerToString((long)ticket), IntegerToString((int)g_trade.ResultRetcode()));
 }
 
 ENUM_TIMEFRAMES TfFromStr(string tf)
@@ -558,20 +560,20 @@ string HandleHistory(string cmd)
    ArraySetAsSeries(r, false);
    int got = CopyRates(sym, tf, 0, count, r);
    if (got <= 0)
-      return StringFormat("{\"success\":false,\"symbol\":\"%s\",\"error\":\"no bars\"}", sym);
+      return StringFormat("{\"type\":\"history\",\"success\":false,\"symbol\":\"%s\",\"error\":\"no bars\"}", sym);
 
    int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
    string bars = "";
    for (int i = 0; i < got; i++)
    {
       if (i > 0) bars += ",";
-      bars += StringFormat("{\"t\":%I64d,\"o\":%s,\"h\":%s,\"l\":%s,\"c\":%s,\"v\":%I64d}",
-              (long)r[i].time,
+      bars += StringFormat("{\"t\":%s,\"o\":%s,\"h\":%s,\"l\":%s,\"c\":%s,\"v\":%s}",
+              IntegerToString((long)r[i].time),
               DoubleToString(r[i].open,  digits),
               DoubleToString(r[i].high,  digits),
               DoubleToString(r[i].low,   digits),
               DoubleToString(r[i].close, digits),
-              r[i].tick_volume);
+              IntegerToString((long)r[i].tick_volume));
    }
    return StringFormat("{\"type\":\"history\",\"success\":true,\"symbol\":\"%s\",\"count\":%d,\"bars\":[%s]}",
                        sym, got, bars);
