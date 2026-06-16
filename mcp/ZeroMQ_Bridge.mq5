@@ -143,6 +143,9 @@ string JsonEscape(string s)
 {
    StringReplace(s, "\\", "\\\\");
    StringReplace(s, "\"", "\\\"");
+   StringReplace(s, "\n", "\\n");
+   StringReplace(s, "\r", "\\r");
+   StringReplace(s, "\t", "\\t");
    return s;
 }
 string JStr(string key, string val) { return "\"" + key + "\":\"" + JsonEscape(val) + "\""; }
