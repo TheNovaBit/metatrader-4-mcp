@@ -368,6 +368,10 @@ string BuildPositionsJson()
       positions += JStr("TakeProfit", DoubleToString(PositionGetDouble(POSITION_TP), digs)) + ",";
       positions += JStr("Profit", DoubleToString(PositionGetDouble(POSITION_PROFIT), 2)) + ",";
       positions += JStr("Swap", DoubleToString(PositionGetDouble(POSITION_SWAP), 2)) + ",";
+      positions += JStr("Magic", IntegerToString(PositionGetInteger(POSITION_MAGIC))) + ",";
+      positions += JStr("OpenTimeEpoch",
+                        IntegerToString((long)PositionGetInteger(POSITION_TIME)
+                                        - (long)(TimeTradeServer() - TimeGMT()))) + ",";
       positions += JStr("OpenTime", TimeToString((datetime)PositionGetInteger(POSITION_TIME))) + ",";
       positions += JStr("Comment", PositionGetString(POSITION_COMMENT));
       positions += "}";
@@ -522,6 +526,8 @@ string HandleClose(string cmd)
    // Pending order? delete it.
    if (OrderSelect(ticket))
    {
+      if (OrderGetInteger(ORDER_MAGIC) != MagicNumber)
+         return StringFormat("{\"success\":false,\"ticket\":%s,\"error\":\"not owned\"}", IntegerToString((long)ticket));
       if (g_trade.OrderDelete(ticket))
          return StringFormat("{\"success\":true,\"ticket\":%s,\"deleted\":true}", IntegerToString((long)ticket));
       return StringFormat("{\"success\":false,\"ticket\":%s,\"error\":%s}", IntegerToString((long)ticket), IntegerToString((int)g_trade.ResultRetcode()));
@@ -529,6 +535,8 @@ string HandleClose(string cmd)
 
    if (!PositionSelectByTicket(ticket))
       return StringFormat("{\"success\":false,\"ticket\":%s,\"error\":\"not found\"}", IntegerToString((long)ticket));
+   if (PositionGetInteger(POSITION_MAGIC) != MagicNumber)
+      return StringFormat("{\"success\":false,\"ticket\":%s,\"error\":\"not owned\"}", IntegerToString((long)ticket));
 
    double full = PositionGetDouble(POSITION_VOLUME);
    bool ok;
@@ -555,6 +563,8 @@ string HandleModify(string cmd)
    double tp     = StringToDouble(ExtractJsonValue(cmd, "take_profit"));
    if (!PositionSelectByTicket(ticket))
       return StringFormat("{\"success\":false,\"ticket\":%s,\"error\":\"not found\"}", IntegerToString((long)ticket));
+   if (PositionGetInteger(POSITION_MAGIC) != MagicNumber)
+      return StringFormat("{\"success\":false,\"ticket\":%s,\"error\":\"not owned\"}", IntegerToString((long)ticket));
    if (g_trade.PositionModify(ticket, sl, tp))
       return StringFormat("{\"success\":true,\"ticket\":%s,\"sl\":%s,\"tp\":%s}", IntegerToString((long)ticket), DoubleToString(sl, 5), DoubleToString(tp, 5));
    return StringFormat("{\"success\":false,\"ticket\":%s,\"error\":%s}", IntegerToString((long)ticket), IntegerToString((int)g_trade.ResultRetcode()));
