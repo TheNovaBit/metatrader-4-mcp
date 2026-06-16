@@ -449,6 +449,7 @@ string ProcessCommand(string cmd)
    if (a == "close")            return HandleClose(cmd);
    if (a == "modify")           return HandleModify(cmd);
    if (a == "history")          return HandleHistory(cmd);
+   if (a == "deals")            return HandleDeals(cmd);
    if (a == "discover")         return HandleDiscover(cmd);
    return StringFormat("{\"success\":false,\"error\":\"unknown cmd: %s\"}", a);
 }
@@ -593,6 +594,47 @@ string HandleHistory(string cmd)
    }
    return StringFormat("{\"type\":\"history\",\"success\":true,\"symbol\":\"%s\",\"count\":%d,\"bars\":[%s]}",
                        sym, got, bars);
+}
+
+string HandleDeals(string cmd)
+{
+   long from = StringToInteger(ExtractJsonValue(cmd, "from"));
+   long to   = StringToInteger(ExtractJsonValue(cmd, "to"));
+   if (to <= 0) to = (long)TimeCurrent();
+
+   if (!HistorySelect((datetime)from, (datetime)to))
+      return "{\"type\":\"deals\",\"success\":false,\"error\":\"history_select_failed\"}";
+
+   int total = HistoryDealsTotal();
+   string deals = "";
+   int n = 0;
+   for (int i = 0; i < total; i++)
+   {
+      ulong t = HistoryDealGetTicket(i);
+      if (t == 0) continue;
+      string sym = HistoryDealGetString(t, DEAL_SYMBOL);
+      int digits = (sym != "") ? (int)SymbolInfoInteger(sym, SYMBOL_DIGITS) : 2;
+      string row = "{";
+      row += JStr("deal_id",     IntegerToString((long)t)) + ",";
+      row += JStr("order",       IntegerToString((long)HistoryDealGetInteger(t, DEAL_ORDER))) + ",";
+      row += JStr("position_id", IntegerToString((long)HistoryDealGetInteger(t, DEAL_POSITION_ID))) + ",";
+      row += JStr("magic",       IntegerToString((long)HistoryDealGetInteger(t, DEAL_MAGIC))) + ",";
+      row += JStr("type",        IntegerToString((long)HistoryDealGetInteger(t, DEAL_TYPE))) + ",";
+      row += JStr("entry",       IntegerToString((long)HistoryDealGetInteger(t, DEAL_ENTRY))) + ",";
+      row += JStr("symbol",      sym) + ",";
+      row += JStr("volume",      DoubleToString(HistoryDealGetDouble(t, DEAL_VOLUME), 2)) + ",";
+      row += JStr("price",       DoubleToString(HistoryDealGetDouble(t, DEAL_PRICE), digits)) + ",";
+      row += JStr("commission",  DoubleToString(HistoryDealGetDouble(t, DEAL_COMMISSION), 2)) + ",";
+      row += JStr("swap",        DoubleToString(HistoryDealGetDouble(t, DEAL_SWAP), 2)) + ",";
+      row += JStr("profit",      DoubleToString(HistoryDealGetDouble(t, DEAL_PROFIT), 2)) + ",";
+      row += JStr("time",        IntegerToString((long)HistoryDealGetInteger(t, DEAL_TIME))) + ",";
+      row += JStr("comment",     HistoryDealGetString(t, DEAL_COMMENT));
+      row += "}";
+      if (n > 0) deals += ",";
+      deals += row;
+      n++;
+   }
+   return StringFormat("{\"type\":\"deals\",\"success\":true,\"count\":%d,\"deals\":[%s]}", n, deals);
 }
 
 // Build one discover row (a JSON object string) for symbol sym.
