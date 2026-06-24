@@ -34,7 +34,7 @@ extern int    OrderRepPort      = 5557;       // REP port  (orders ← Python) �
 // present (deploy_ea.bat copies it from D:\Claude - MT4 - Scalper\symbols.txt).
 // This default is the fallback used when symbols.txt is missing — keep it in
 // sync with the scalper repo's symbols.txt so a manual reattach still works.
-extern string SymbolList        = "EURUSD.r,GBPUSD.r,USDJPY.r,NZDUSD.r,CADJPY.r,AUDUSD.r,USDCHF.r,GBPAUD.r,GBPJPY.r";
+extern string SymbolList        = "EURUSD.r,GBPUSD.r,USDJPY.r,NZDUSD.r,CADJPY.r,AUDUSD.r,USDCHF.r,GBPAUD.r,GBPJPY.r,XAUUSD.r";
 extern int    MagicNumber       = 20260200;   // scalper magic (swing uses 20260101)
 extern string SymbolListFile    = "symbols.txt";   // file under MQL4\Files\ — blank to disable runtime load
 // EnablePush=false makes this a REP-only bridge (history/orders), skipping all
