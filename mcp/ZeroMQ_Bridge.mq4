@@ -321,10 +321,14 @@ string BuildSymbolJson(string sym)
    }
    if (asian_high == 0 || asian_low == DBL_MAX) { asian_high = 0; asian_low = 0; }
 
-   // M15 arrays — 8 closed bars (sufficient for HEIKIN_STREAK_M15 which uses n=5 HA recurrence).
-   // Opens added 2026-05 for Heikin Ashi computation on the M15 timeframe.
+   // M15 arrays — 30 closed bars. Bumped 8->30 on 2026-06-24 for the M15 gold cohort:
+   // CONNORS_RSI2_M15 computes RSI(2) in Python from these bars, and >=16 closed bars
+   // are needed to match the full-history backtest RSI (8 bars flips the oversold/
+   // overbought decision ~1.4% of the time; 16+ is bit-identical). 30 gives margin and
+   // headroom for any future Python-computed M15 indicator. HEIKIN_STREAK_M15 (n=5 HA)
+   // and PULLBACK_M15 (6-bar lookback) are unaffected. Opens added 2026-05 for Heikin Ashi.
    string m15O = "", m15C = "", m15H = "", m15L = "", m15T = "";
-   for (int b = 1; b <= 8; b++)
+   for (int b = 1; b <= 30; b++)
    {
       if (b > 1) { m15O += ","; m15C += ","; m15H += ","; m15L += ","; m15T += ","; }
       m15O += DoubleToString(iOpen( sym, PERIOD_M15, b), digits);
