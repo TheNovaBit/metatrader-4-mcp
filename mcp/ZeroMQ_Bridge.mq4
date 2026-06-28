@@ -339,11 +339,14 @@ string BuildSymbolJson(string sym)
    }
    double atr14_m15 = iATR(sym, PERIOD_M15, 14, 1);
 
-   // M5 arrays — 40 closed bars (bar 0 = forming, skipped; bars 1-40 published).
-   // 40 bars = 3.3 hours; sufficient for EMA(21), BB(20), RSI(14) convergence.
-   // Opens added 2026-05 for any future M5 Heikin Ashi or candle-pattern detectors.
+   // M5 arrays — 150 closed bars (bar 0 = forming, skipped; bars 1-150 published).
+   // Bumped 40->150 on 2026-06-28 for TILSON_CROSS_M5: the agent computes a Tilson
+   // T3(21) in Python from these closes, and T3 is a 6-cascade EMA that needs ~80
+   // converged bars (40 is unconverged — sweep_tilson_window.py). 150 gives margin;
+   // the detector caps at the most-recent 80. (Mirrors the M15 8->30 CONNORS bump.)
+   // Still ample for EMA(21)/BB(20)/RSI(14). Opens added 2026-05 for M5 HA/candles.
    string m5O = "", m5C = "", m5H = "", m5L = "", m5T = "";
-   for (int b5 = 1; b5 <= 40; b5++)
+   for (int b5 = 1; b5 <= 150; b5++)
    {
       if (b5 > 1) { m5O += ","; m5C += ","; m5H += ","; m5L += ","; m5T += ","; }
       m5O += DoubleToString(iOpen( sym, PERIOD_M5, b5), digits);
