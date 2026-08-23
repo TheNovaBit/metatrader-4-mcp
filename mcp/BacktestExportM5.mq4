@@ -39,10 +39,16 @@ int OnStart()
    }
 
    // Header
+   // NOTE: `volume` is MT4 TICK volume (iVolume) -- a count of price changes, not
+   // traded size. Spot FX reports no true volume; tick count is the standard proxy
+   // and is what the MT5 export writes too. There is deliberately NO `spread` column
+   // here: MQL4 exposes no per-bar historical spread (only the live MarketInfo
+   // snapshot), and writing a constant or a zero would read downstream as real data.
+   // The MT5 export DOES carry per-bar spread -- prefer it when cost fidelity matters.
    FileWrite(fh, "time,open,high,low,close,"
                  "atr14_m5,ema8_m5,ema21_m5,ema50_m5,"
                  "atr14_1h,adx14_1h,trend_1h,"
-                 "asian_high,asian_low");
+                 "asian_high,asian_low,volume");
 
    int total = MathMin(BarsBack, iBars(sym, PERIOD_M5) - 1);
    Print("BacktestExportM5: exporting ", total, " M5 bars for ", sym, " ...");
@@ -100,7 +106,8 @@ int OnStart()
          DoubleToString(adx_1h, 2),
          trend_1h,
          DoubleToString(ah, digits),
-         DoubleToString(al, digits)
+         DoubleToString(al, digits),
+         IntegerToString(iVolume(sym, PERIOD_M5, i))
       );
    }
 
