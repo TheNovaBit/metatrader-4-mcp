@@ -55,6 +55,33 @@ Socket  g_rep(g_ctx, ZMQ_REP);
 datetime g_lastPush = 0;
 
 // ---------------------------------------------------------------------------
+// Per-ticket excursion tracking (2026-09-02)
+//
+// The Python agent's mfe_r/mae_r are a 5s poll of its ZMQ quote cache, so they
+// are a FLOOR on the true excursion, not a measurement (bar-extreme adjudication
+// put the understatement at median +0.048R, p90 +0.392R, max +1.854R). OnTimer
+// already fires at 100ms while PushAllData() is gated to UpdateIntervalSec (3s),
+// so the EA can carry high-water marks at 50x the Python sample rate and emit
+// them on the EXISTING positions payload — no new message type, no extra traffic.
+//
+// The EA stays dumb: it emits RAW closing prices and does no R arithmetic. The
+// agent maps Max/Min to favourable/adverse by direction, where the entry, the
+// entry stop and the tested _price_dist_to_gbp conversion already live.
+//
+// Parallel arrays keyed by ticket; g_trkCount is the live length and ArraySize()
+// is the capacity, which is never shrunk (a closed ticket frees its slot for the
+// next one instead of reallocating). Position counts here are single digits, so
+// the linear TrackFind() is cheaper than any index at 10 Hz.
+// ---------------------------------------------------------------------------
+int      g_trkTicket[];    // ticket id
+double   g_trkMax[];       // highest CLOSING price seen since tracking began
+double   g_trkMin[];       // lowest  CLOSING price seen since tracking began
+datetime g_trkSince[];     // when tracking began for this ticket
+int      g_trkSeen[];      // scratch, one pass only (0/1 — MQL4 bool[] has no
+                           // precedent in this file and F7 is a manual step) — evicts tickets that closed
+int      g_trkCount = 0;   // live entries occupy [0 .. g_trkCount-1]
+
+// ---------------------------------------------------------------------------
 // Symbol list loader — reads MQL4\Files\<SymbolListFile> if present
 //
 // Format: one symbol per line. Blank lines and lines starting with '#' are
@@ -151,6 +178,14 @@ void OnTimer()
 
    // Drain all pending REP requests without blocking
    while (ProcessREPOnce()) {}
+
+   // Excursion tracking runs LAST, AFTER the REP drain — never before it.
+   // MT4 is single-threaded and OnTimer already pushes data before draining the
+   // order socket; anything inserted ahead of the drain lengthens the MONEY PATH
+   // (order send->ack is 165ms median and this timer is the only thing servicing
+   // REP). Placing it here makes that structural instead of a claim. DO NOT MOVE
+   // THIS CALL UP — the harm would be silent, showing up only as slower fills.
+   UpdateExcursionTracking();
 }
 
 bool ProcessREPOnce()
@@ -163,6 +198,96 @@ bool ProcessREPOnce()
    string response = ProcessCommand(cmd);
    g_rep.send(response);
    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Excursion tracking — high-water marks per open ticket, updated every OnTimer
+// ---------------------------------------------------------------------------
+
+// Slot index for a ticket, or -1 if it is not being tracked.
+int TrackFind(int ticket)
+{
+   for (int i = 0; i < g_trkCount; i++)
+      if (g_trkTicket[i] == ticket) return i;
+   return -1;
+}
+
+// Sample every open market position at the price it would actually CLOSE at —
+// bid for a BUY, ask for a SELL — and carry the running max/min. Called from
+// OnTimer AFTER the REP drain (see the comment there); nothing in here touches
+// the order path, sends on a socket, or modifies an order.
+void UpdateExcursionTracking()
+{
+   // Mark every tracked ticket unseen. Anything still unseen after the scan has
+   // closed and its slot is reclaimed below, so the arrays cannot grow forever.
+   for (int i = 0; i < g_trkCount; i++)
+      g_trkSeen[i] = 0;
+
+   for (int p = 0; p < OrdersTotal(); p++)
+   {
+      if (!OrderSelect(p, SELECT_BY_POS, MODE_TRADES)) continue;
+      if (OrderType() > 1) continue;   // skip pending — matches BuildPositionsJson
+
+      int tk  = OrderTicket();
+      int idx = TrackFind(tk);
+
+      // Mark seen BEFORE the quote check. The position is demonstrably still
+      // open, so the slot must survive even if this pass cannot price it —
+      // otherwise a single bad quote would evict the ticket and re-seed its
+      // high-water marks from the current price, silently losing the excursion.
+      if (idx >= 0) g_trkSeen[idx] = 1;
+
+      string sym = OrderSymbol();
+      double px  = (OrderType() == OP_BUY) ? MarketInfo(sym, MODE_BID)
+                                           : MarketInfo(sym, MODE_ASK);
+      // A symbol with no quote yet returns 0. Seeding a high-water mark from
+      // zero would report a MinPrice of 0 forever, so hold what we have rather
+      // than record it — absent is not a measurement.
+      if (px <= 0) continue;
+
+      if (idx < 0)
+      {
+         // New ticket. Grow only when capacity is actually short; a slot freed
+         // by a closed ticket is reused as-is.
+         idx = g_trkCount;
+         g_trkCount++;
+         if (ArraySize(g_trkTicket) < g_trkCount)
+         {
+            ArrayResize(g_trkTicket, g_trkCount);
+            ArrayResize(g_trkMax,    g_trkCount);
+            ArrayResize(g_trkMin,    g_trkCount);
+            ArrayResize(g_trkSince,  g_trkCount);
+            ArrayResize(g_trkSeen,   g_trkCount);
+         }
+         g_trkTicket[idx] = tk;
+         g_trkMax[idx]    = px;
+         g_trkMin[idx]    = px;
+         g_trkSince[idx]  = TimeCurrent();
+         g_trkSeen[idx]   = 1;      // explicit, so a reused slot is never stale
+      }
+      else
+      {
+         if (px > g_trkMax[idx]) g_trkMax[idx] = px;
+         if (px < g_trkMin[idx]) g_trkMin[idx] = px;
+      }
+   }
+
+   // Compact — keep the seen entries in order, drop the rest. g_trkCount falls;
+   // the allocated capacity is deliberately left alone for reuse.
+   int w = 0;
+   for (int r = 0; r < g_trkCount; r++)
+   {
+      if (g_trkSeen[r] == 0) continue;
+      if (w != r)
+      {
+         g_trkTicket[w] = g_trkTicket[r];
+         g_trkMax[w]    = g_trkMax[r];
+         g_trkMin[w]    = g_trkMin[r];
+         g_trkSince[w]  = g_trkSince[r];
+      }
+      w++;
+   }
+   g_trkCount = w;
 }
 
 // ---------------------------------------------------------------------------
@@ -505,6 +630,30 @@ string BuildPositionsJson()
          OrderType() == OP_BUY ? MarketInfo(OrderSymbol(), MODE_BID)
                                : MarketInfo(OrderSymbol(), MODE_ASK), digs);
 
+      // Excursion high-water marks, accumulated at 100ms by UpdateExcursionTracking().
+      // Empty strings when the ticket is not tracked (it opened after the last
+      // timer pass) — the agent must read empty as UNKNOWN and fall back to its
+      // own poll, never as zero.
+      //
+      // TrackedSince is the HONESTY field: an EA reattach or an MT4 restart
+      // clears the arrays and tracking restarts from the CURRENT price, which
+      // silently understates the excursion. Comparing it with OpenTime is how the
+      // agent tells a measurement from a floor, so it is emitted at the SAME
+      // MINUTE resolution as OpenTime (bare TimeToString) and `TrackedSince <=
+      // OpenTime` is then a correct comparison needing NO tolerance.
+      //
+      // Second resolution was tried first and is WORSE, for a reason worth keeping:
+      // it forces a +60s tolerance, and a tolerance errs toward FULL — an EA that
+      // restarted 59s into a position would claim a measurement it does not have.
+      // Truncating both to the minute errs the other way, toward EA_PARTIAL, on
+      // roughly the 0.2% of trades whose first sample crosses a minute boundary.
+      // A floor wrongly labelled a floor costs nothing; a floor wrongly labelled a
+      // measurement corrupts every exit study that trusts it.
+      int    trk       = TrackFind(OrderTicket());
+      string max_price = (trk >= 0) ? DoubleToString(g_trkMax[trk], digs) : "";
+      string min_price = (trk >= 0) ? DoubleToString(g_trkMin[trk], digs) : "";
+      string trk_since = (trk >= 0) ? TimeToString(g_trkSince[trk]) : "";
+
       if (!first) positions += ",";
       first = false;
       positions += "{";
@@ -520,6 +669,9 @@ string BuildPositionsJson()
       positions += JStr("Commission",   DoubleToString(OrderCommission(), 2))    + ",";
       positions += JStr("Swap",         DoubleToString(OrderSwap(), 2))          + ",";
       positions += JStr("OpenTime",     TimeToString(OrderOpenTime()))           + ",";
+      positions += JStr("MaxPrice",     max_price)                               + ",";
+      positions += JStr("MinPrice",     min_price)                               + ",";
+      positions += JStr("TrackedSince", trk_since)                               + ",";
       positions += JStr("Comment",      OrderComment());
       positions += "}";
    }
