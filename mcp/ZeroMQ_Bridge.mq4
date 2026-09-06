@@ -46,6 +46,43 @@ extern string SymbolListFile    = "symbols.txt";   // file under MQL4\Files\ —
 extern bool   EnablePush        = true;       // false = REP-only (no data PUSH)
 
 // ---------------------------------------------------------------------------
+// DEAD-MAN HEARTBEAT (2026-09-06)
+// ---------------------------------------------------------------------------
+// THE GAP IT CLOSES. Python cannot flatten over a failed bridge, so every
+// agent-side protection -- the time exit, the 16:30 flatten, the profit lock --
+// is unavailable exactly when the CHANNEL is the thing that broke. Only a
+// broker-side contract can act then. Server-side SL/TP still bound the loss,
+// which is why this was filed as a gap and not an emergency.
+//
+// WHAT IT DOES, and it is deliberately the NARROW half: on expiry the bridge
+// REFUSES NEW ORDERS. It does not flatten. Flattening on a heartbeat expiry
+// would close live positions on a transient socket hiccup, turning a
+// communications fault into a realised loss -- worse than the disease. Refusing
+// an entry is fail-safe: the cost is a skipped trade.
+//
+// THE REAL SCENARIO IT GUARDS. ZMQ REQ/REP queues. An order computed on a quote
+// from minutes ago can sit in a socket buffer and be delivered late, after a
+// reconnect -- and the agent's own staleness and drift aborts all run BEFORE the
+// send, so they cannot see it. A stale heartbeat is the only evidence available
+// on this side that the message crossing the wire is older than it looks.
+//
+// SELF-ARMING, which is what makes it safe to ship enabled. g_hbArmed starts
+// false and is set by the FIRST ping. A consumer that never pings is never armed
+// and is never refused, so the file-based swing bridge (magic 20260101,
+// EnablePush=false, no pings) is untouched BY CONSTRUCTION rather than by a
+// setting someone has to remember on every reattach. HeartbeatTimeoutSec=0
+// disables it outright.
+//
+// CLOSE and MODIFY are NEVER gated -- reducing or protecting an existing
+// position must work even when the channel is suspect. Only NEW exposure is
+// refused.
+extern int    HeartbeatTimeoutSec = 90;       // 0 = off; refuse NEW orders after this many seconds with no ping
+
+datetime g_lastHeartbeat = 0;                 // when the last ping arrived
+bool     g_hbArmed       = false;             // set by the first ping; never cleared
+bool     g_hbRefusing    = false;             // latch so an episode logs once, not per order
+
+// ---------------------------------------------------------------------------
 // ZMQ context and sockets (module-level; created once)
 // ---------------------------------------------------------------------------
 Context g_ctx("ZeroMQ_Bridge");
@@ -145,6 +182,18 @@ int OnInit()
    }
 
    Print("ZMQ_Bridge v1.0 started — PUSH=", pushAddr, "  REP=", repAddr);
+   // The dead-man contract starts DISARMED on every attach and is armed by the
+   // first ping, so a reattach can never inherit a stale clock and refuse the
+   // agent's first order.
+   g_lastHeartbeat = 0;
+   g_hbArmed       = false;
+   g_hbRefusing    = false;
+   if (HeartbeatTimeoutSec > 0)
+      Print("ZMQ_Bridge: dead-man heartbeat ready — arms on the first ping, ",
+            "timeout ", HeartbeatTimeoutSec, "s (new orders only; close/modify ",
+            "are never gated)");
+   else
+      Print("ZMQ_Bridge: dead-man heartbeat DISABLED (HeartbeatTimeoutSec=0)");
    EventSetMillisecondTimer(100);   // 100ms timer keeps REP latency low
 
    // Do NOT call PushAllData() here. Calling it in OnInit blocks the MT4 main
@@ -721,15 +770,63 @@ string BuildPositionsJson()
 // REP command dispatcher
 // ---------------------------------------------------------------------------
 
+// Is the dead-man contract currently satisfied? See the HeartbeatTimeoutSec
+// block above. False ONLY when the agent has proved it sends heartbeats and has
+// then gone quiet for longer than the timeout -- so an un-armed consumer, or a
+// timeout of 0, always reads fresh.
+bool HeartbeatFresh()
+{
+   if (HeartbeatTimeoutSec <= 0) return true;   // disabled
+   if (!g_hbArmed)               return true;   // this consumer never pings
+   return (TimeCurrent() - g_lastHeartbeat) <= HeartbeatTimeoutSec;
+}
+
 string ProcessCommand(string cmd)
 {
    string action = ExtractJsonValue(cmd, "cmd");
 
    if (action == "ping")
+   {
+      // The heartbeat renewal, and the ONLY thing that arms the contract. Other
+      // commands deliberately do NOT renew it: an order is exactly the message
+      // that may have been sitting in a socket buffer, so letting it renew the
+      // clock it is about to be judged against would make the check circular.
+      if (!g_hbArmed)
+         Print("ZMQ_Bridge: dead-man heartbeat ARMED (timeout ",
+               HeartbeatTimeoutSec, "s) — new orders will be refused after that ",
+               "long without a ping");
+      g_hbArmed       = true;
+      g_lastHeartbeat = TimeCurrent();
+      if (g_hbRefusing)
+      {
+         Print("ZMQ_Bridge: heartbeat restored — new orders accepted again");
+         g_hbRefusing = false;
+      }
       return "{\"success\":true,\"type\":\"pong\"}";
+   }
 
    if (action == "place_order")
+   {
+      // NEW EXPOSURE ONLY. close/modify below are never gated: reducing or
+      // protecting an existing position must work even when the channel is
+      // suspect, and refusing those would be the one way this guard could cost
+      // real money rather than a skipped trade.
+      if (!HeartbeatFresh())
+      {
+         if (!g_hbRefusing)
+         {
+            Print("ZMQ_Bridge: DEAD-MAN TRIPPED — no heartbeat for ",
+                  (int)(TimeCurrent() - g_lastHeartbeat), "s (limit ",
+                  HeartbeatTimeoutSec, "s). Refusing new orders; close/modify ",
+                  "still served.");
+            g_hbRefusing = true;
+         }
+         return StringFormat(
+            "{\"success\":false,\"error\":\"dead-man: no heartbeat for %ds (limit %ds)\"}",
+            (int)(TimeCurrent() - g_lastHeartbeat), HeartbeatTimeoutSec);
+      }
       return HandlePlaceOrder(cmd);
+   }
 
    if (action == "close")
       return HandleClose(cmd);
