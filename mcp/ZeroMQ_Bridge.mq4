@@ -174,10 +174,36 @@ string LoadSymbolListFromFile(string fname)
 // Init / Deinit
 // ---------------------------------------------------------------------------
 
+// Known REP-port -> magic pairs, from the isolation table in the scalper's
+// CLAUDE.md. 0 = an unknown port, which is not checked.
+int ExpectedMagicForRepPort(int repPort)
+{
+   if (repPort == 5555) return 20260101;   // swing
+   if (repPort == 5557) return 20260200;   // scalper, primary account
+   if (repPort == 5559) return 20260300;   // scalper, manual account
+   return 0;
+}
+
 int OnInit()
 {
    string pushAddr = "tcp://*:" + IntegerToString(DataPushPort);
    string repAddr  = "tcp://*:" + IntegerToString(OrderRepPort);
+
+   // A port and a magic are ONE choice (review 2026-09-08). Re-attaching resets
+   // every input to the compiled defaults, which are the PRIMARY's; a terminal
+   // that then binds its own ports with the wrong magic places orders that
+   // RefuseIfNotOwned refuses to close or modify -- positions stranded on their
+   // broker bracket. Refuse to start on a KNOWN pairing that disagrees, while
+   // the operator is still at the terminal to see it.
+   int expectedMagic = ExpectedMagicForRepPort(OrderRepPort);
+   if (expectedMagic > 0 && expectedMagic != MagicNumber)
+   {
+      Print("ZMQ_Bridge: REFUSING TO START -- OrderRepPort ", OrderRepPort,
+            " pairs with MagicNumber ", expectedMagic, " but the input is ", MagicNumber,
+            " (inputs reset by a re-attach? set them in Properties -> Inputs)");
+      Alert("ZMQ_Bridge: port/magic mismatch on REP ", OrderRepPort, " -- NOT started");
+      return INIT_PARAMETERS_INCORRECT;
+   }
 
    // SNDHWM must be set BEFORE bind to apply to the pipes bind creates.
    g_push.setSendHighWaterMark(PUSH_SNDHWM);
