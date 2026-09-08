@@ -87,7 +87,15 @@ bool     g_hbRefusing    = false;             // latch so an episode logs once, 
 // ---------------------------------------------------------------------------
 Context g_ctx("ZeroMQ_Bridge");
 Socket  g_push(g_ctx, ZMQ_PUSH);
-Socket  g_rep(g_ctx, ZMQ_REP);
+// The REP socket is a POINTER (2026-09-08, TECH_DEBT #38k) so it can be torn
+// down and recreated. A REP socket is a strict recv->send state machine: if a
+// send ever fails, the socket is stuck expecting a send and every later recv
+// fails, while the PUSH stream keeps flowing -- the feed looks alive and every
+// order/close from the agent times out one at a time. Recreating the socket is
+// the only way out short of a reattach.
+Socket  *g_rep       = NULL;
+bool     g_repBroken = false;   // set on a failed send; cleared by a successful rebind
+datetime g_repRetryAt = 0;      // next rebind attempt (rate-limited, see RecreateRepSocket)
 
 datetime g_lastPush = 0;
 
@@ -164,10 +172,13 @@ int OnInit()
    string repAddr  = "tcp://*:" + IntegerToString(OrderRepPort);
 
    if (!g_push.bind(pushAddr)) { Print("ZMQ_Bridge: PUSH bind failed on ", pushAddr); return INIT_FAILED; }
-   if (!g_rep.bind(repAddr))   { Print("ZMQ_Bridge: REP bind failed on ",  repAddr);  return INIT_FAILED; }
-
    g_push.setLinger(0);
+
+   g_rep = new Socket(g_ctx, ZMQ_REP);
    g_rep.setLinger(0);
+   if (!g_rep.bind(repAddr))   { Print("ZMQ_Bridge: REP bind failed on ",  repAddr);  return INIT_FAILED; }
+   g_repBroken  = false;
+   g_repRetryAt = 0;
 
    // Override extern SymbolList with the file-based list if present
    string loaded = LoadSymbolListFromFile(SymbolListFile);
@@ -207,7 +218,12 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    g_push.unbind("tcp://*:" + IntegerToString(DataPushPort));
-   g_rep.unbind("tcp://*:" + IntegerToString(OrderRepPort));
+   if (g_rep != NULL)
+   {
+      g_rep.unbind("tcp://*:" + IntegerToString(OrderRepPort));
+      delete g_rep;
+      g_rep = NULL;
+   }
    Print("ZMQ_Bridge: shutdown (reason=", reason, ")");
 }
 
@@ -225,6 +241,10 @@ void OnTimer()
       g_lastPush = TimeCurrent();
    }
 
+   // A REP socket wedged by a failed send (see g_repBroken) is rebuilt here,
+   // rate-limited, BEFORE the drain so a successful rebind serves this pass.
+   if (g_repBroken) RecreateRepSocket();
+
    // Drain all pending REP requests without blocking
    while (ProcessREPOnce()) {}
 
@@ -239,14 +259,63 @@ void OnTimer()
 
 bool ProcessREPOnce()
 {
+   if (g_rep == NULL || g_repBroken) return false;
+
    ZmqMsg request;
    if (!g_rep.recv(request, true))   // true = NOBLOCK; returns false if no msg
       return false;
 
    string cmd      = request.getData();
    string response = ProcessCommand(cmd);
-   g_rep.send(response);
+
+   // THE SEND IS CHECKED (TECH_DEBT #38k). An unchecked failure here used to
+   // leave the socket in the send-expected state forever: recv then fails on
+   // every timer pass, PUSH keeps streaming, and the agent sees a live feed
+   // whose every order and close times out. The command HAS been executed by
+   // this point (an order may have filled) -- the agent's timeout path already
+   // treats that as "fill uncertain" and adopts the position, so the honest
+   // recovery is to rebuild the socket, not to retry the send.
+   if (!g_rep.send(response))
+   {
+      Print("ZMQ_Bridge: REP send FAILED (zmq errno ", Zmq::errorNumber(), " ",
+            Zmq::errorMessage(), ") after cmd=", ExtractJsonValue(cmd, "cmd"),
+            " -- socket wedged; rebuilding REP on the next timer pass");
+      g_repBroken  = true;
+      g_repRetryAt = 0;   // first rebuild attempt is immediate
+      return false;
+   }
    return true;
+}
+
+// Tear down and rebind the REP socket after a failed send. Rate-limited to one
+// attempt per 5s because a rebind can legitimately fail for a short while
+// (Windows keeps a listener's port reserved briefly after close); each failure
+// is logged so a REP that stays dead is visible in the Experts log rather than
+// only as agent-side timeouts. Until the rebind succeeds the bridge serves NO
+// commands -- which is exactly the state it was already in.
+void RecreateRepSocket()
+{
+   if (TimeLocal() < g_repRetryAt) return;
+   g_repRetryAt = TimeLocal() + 5;
+
+   string repAddr = "tcp://*:" + IntegerToString(OrderRepPort);
+   if (g_rep != NULL)
+   {
+      g_rep.unbind(repAddr);
+      delete g_rep;
+      g_rep = NULL;
+   }
+   g_rep = new Socket(g_ctx, ZMQ_REP);
+   g_rep.setLinger(0);
+   if (!g_rep.bind(repAddr))
+   {
+      Print("ZMQ_Bridge: REP rebind FAILED on ", repAddr, " (zmq errno ",
+            Zmq::errorNumber(), " ", Zmq::errorMessage(),
+            ") -- will retry in 5s; NO commands served until then");
+      return;
+   }
+   g_repBroken = false;
+   Print("ZMQ_Bridge: REP socket recreated on ", repAddr, " -- commands accepted again");
 }
 
 // ---------------------------------------------------------------------------
@@ -391,6 +460,16 @@ string BuildSymbolJson(string sym)
    double bid    = MarketInfo(sym, MODE_BID);
    double point  = MarketInfo(sym, MODE_POINT);
    double spread = MarketInfo(sym, MODE_SPREAD) * point;
+   // THIS symbol's last quote time (TECH_DEBT #38h). `LastUpdate` below is
+   // TimeCurrent(), the last tick on ANY symbol, so a symbol whose quotes have
+   // stopped (outside its session, a lapsed Market Watch subscription) kept a
+   // frozen Bid/Ask under a fresh-looking timestamp and passed the agent's
+   // pre-order staleness check. TickAgeSecs is the difference in SERVER seconds,
+   // so it is immune to the broker-DST parsing problem (#38a) that a wall-clock
+   // comparison of LastTick would inherit. An unknown symbol reads MODE_TIME 0,
+   // i.e. an enormous age -- the fail-safe direction.
+   datetime lastTick = (datetime)MarketInfo(sym, MODE_TIME);
+   long     tickAge  = (lastTick > 0) ? (long)(TimeCurrent() - lastTick) : 999999;
 
    // 1H EMAs
    double ema8_cur   = iMA(sym, tf,  8, 0, MODE_EMA, PRICE_CLOSE, 0);
@@ -628,6 +707,8 @@ string BuildSymbolJson(string sym)
    j += JStr("EMA50_M5",         DoubleToString(ema50_m5,  digits))               + ",";
    j += JStr("Trend_M5",         trend_m5)                                        + ",";
    j += JStr("Cross_M5",         cross_m5)                                        + ",";
+   j += JStr("LastTick",          TimeToString(lastTick, TIME_DATE|TIME_SECONDS))     + ",";
+   j += JStr("TickAgeSecs",       IntegerToString(tickAge))                          + ",";
    j += JStr("LastUpdate",        TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)) + ",";
    j += JStr("WriteComplete",     "1");
    j += "}";
@@ -841,6 +922,35 @@ string ProcessCommand(string cmd)
 }
 
 // ---------------------------------------------------------------------------
+// Lot arithmetic (TECH_DEBT #38c). Shared by order placement and partial close.
+// ---------------------------------------------------------------------------
+
+// Tolerance for "is this lot on the broker grid". 1e-9 is far below any lot
+// step a broker publishes (0.001 at the finest) and far above double noise.
+#define LOT_EPS 1e-9
+
+// Decimal places implied by the broker's lot step: 1.0 -> 0, 0.1 -> 1,
+// 0.01 -> 2, 0.001 -> 3. Used so a reply never mis-states a lot through a
+// hardcoded %.2f.
+int LotDigits(double lotStep)
+{
+   if (lotStep <= 0)    return 2;
+   if (lotStep >= 1.0)  return 0;
+   if (lotStep >= 0.1)  return 1;
+   if (lotStep >= 0.01) return 2;
+   return 3;
+}
+
+// Floor `lots` onto the broker's step grid. The epsilon is the whole point:
+// 0.57 / 0.01 is 56.999999999999993 in binary and a bare MathFloor drops a
+// step. Never rounds UP, never raises to the minimum -- callers decide that.
+double NormaliseLots(double lots, double lotStep)
+{
+   if (lotStep > 0) lots = MathFloor(lots / lotStep + LOT_EPS) * lotStep;
+   return NormalizeDouble(lots, LotDigits(lotStep));
+}
+
+// ---------------------------------------------------------------------------
 // Order placement — mirrors MCP_Ultimate.mq4's ExecuteOrderCommand()
 // ---------------------------------------------------------------------------
 
@@ -874,12 +984,39 @@ string HandlePlaceOrder(string cmd)
    else if (operation == "SELL_STOP")  { orderType = OP_SELLSTOP;  arrowColor = clrRed;  }
    else return StringFormat("{\"success\":false,\"error\":\"invalid operation: %s\"}", operation);
 
-   // Normalise lot size to broker constraints
+   // Normalise lot size to broker constraints (rewritten 2026-09-08, TECH_DEBT
+   // #38c). Two defects lived here. (1) `MathFloor(lots / lotStep)` floors the
+   // binary representation, so 0.57/0.01 = 56.999... became 0.56 and GER40's
+   // 0.3/0.1 = 2.999... became 0.2 lots -- a 33% under-size. The epsilon fixes
+   // that. (2) `MathMax(minLot, ...)` silently RAISED a below-minimum request to
+   // the broker minimum, up to 5x the risk the agent sized -- the GER40 near-miss
+   // of 2026-08-29, latent for every future symbol. A below-minimum request is
+   // now REFUSED; the agent decides, never this file. Clamping DOWN to maxLot is
+   // kept: a smaller position than requested is the safe direction, and the
+   // reply carries the lots actually sent so the agent can see the difference.
    double lotStep = MarketInfo(symbol, MODE_LOTSTEP);
    double minLot  = MarketInfo(symbol, MODE_MINLOT);
    double maxLot  = MarketInfo(symbol, MODE_MAXLOT);
-   if (lotStep > 0) lots = MathFloor(lots / lotStep) * lotStep;
-   lots = NormalizeDouble(MathMax(minLot, MathMin(maxLot, lots)), 2);
+   double reqLots = lots;
+   lots = NormaliseLots(lots, lotStep);
+   if (lots <= 0 || lots < minLot - LOT_EPS)
+   {
+      Print("ZMQ_Bridge: REFUSED ", operation, " ", symbol, " -- requested ",
+            DoubleToString(reqLots, 3), " lots normalises to ",
+            DoubleToString(lots, LotDigits(lotStep)), ", below broker minimum ",
+            DoubleToString(minLot, LotDigits(lotStep)));
+      return StringFormat(
+         "{\"success\":false,\"error\":\"lots below min\",\"requested_lots\":%s,"
+         "\"normalised_lots\":%s,\"min_lot\":%s,\"symbol\":\"%s\",\"operation\":\"%s\"}",
+         DoubleToString(reqLots, 3), DoubleToString(lots, LotDigits(lotStep)),
+         DoubleToString(minLot, LotDigits(lotStep)), symbol, operation);
+   }
+   if (maxLot > 0 && lots > maxLot + LOT_EPS)
+   {
+      Print("ZMQ_Bridge: clamped ", symbol, " lots ", DoubleToString(lots, 3),
+            " DOWN to broker maximum ", DoubleToString(maxLot, 3));
+      lots = NormaliseLots(maxLot, lotStep);
+   }
 
    // Idempotency — suppress duplicate if comment+magic matches an existing order
    for (int k = 0; k < OrdersTotal(); k++)
@@ -905,11 +1042,17 @@ string HandlePlaceOrder(string cmd)
       double fillPrice = price;
       if (OrderSelect(ticket, SELECT_BY_TICKET))
          fillPrice = OrderOpenPrice();
-      Print("ZMQ_Bridge: order placed ticket=", ticket, " ", operation, " ", symbol);
+      // `lots` is what was SENT, after normalisation; `requested_lots` is what
+      // the agent asked for. They differ only by flooring to the step (or a
+      // maxLot clamp) now that a below-minimum request is refused above. The
+      // agent adopts `lots` into its shadow meta and alerts when they differ.
+      Print("ZMQ_Bridge: order placed ticket=", ticket, " ", operation, " ", symbol,
+            " lots=", DoubleToString(lots, LotDigits(lotStep)));
       return StringFormat(
          "{\"success\":true,\"ticket\":%d,\"symbol\":\"%s\",\"operation\":\"%s\","
-         "\"lots\":%.2f,\"price\":%.5f,\"open_price\":%.5f}",
-         ticket, symbol, operation, lots, price, fillPrice);
+         "\"lots\":%s,\"requested_lots\":%s,\"price\":%.5f,\"open_price\":%.5f}",
+         ticket, symbol, operation, DoubleToString(lots, LotDigits(lotStep)),
+         DoubleToString(reqLots, 3), price, fillPrice);
    }
 
    int err = GetLastError();
@@ -932,6 +1075,17 @@ string HandleHistory(string cmd)
    if (!OrderSelect(ticket, SELECT_BY_TICKET, MODE_HISTORY))
       return StringFormat(
          "{\"success\":false,\"error\":\"ticket %d not in history\"}", ticket);
+
+   // SELECT_BY_TICKET IGNORES THE POOL ARGUMENT (documented MQL4 behaviour):
+   // an OPEN position is selected here just as readily as a closed one, and
+   // its OrderClosePrice()/OrderProfit() are the CURRENT floating values. Until
+   // 2026-09-08 that let the agent record a still-open position as a closed
+   // trade at its floating P&L whenever one positions push omitted the ticket
+   // (TECH_DEBT #39d, superseding the #38b remedy). Only a non-zero close time
+   // is proof of a close.
+   if (OrderCloseTime() == 0)
+      return StringFormat(
+         "{\"success\":false,\"error\":\"ticket %d still open\",\"open\":true}", ticket);
 
    return StringFormat(
       "{\"success\":true,\"ticket\":%d,\"profit\":%.2f,\"commission\":%.2f,"
@@ -957,13 +1111,23 @@ string HandleClose(string cmd)
    double closePrice = 0;
    double closeLots  = OrderLots();
 
-   // Partial close: honour requested lot size if < full position
+   // Partial close: honour requested lot size if < full position. Same two
+   // fixes as HandlePlaceOrder (TECH_DEBT #38c): epsilon floor, and a partial
+   // that normalises below the broker minimum is REFUSED rather than silently
+   // raised -- the agent asked to close a specific amount and must learn it
+   // cannot, not find a larger slice gone.
    if (reqLots > 0 && reqLots < OrderLots())
    {
       double lotStep = MarketInfo(OrderSymbol(), MODE_LOTSTEP);
       double minLot  = MarketInfo(OrderSymbol(), MODE_MINLOT);
-      closeLots = NormalizeDouble(
-         MathMax(minLot, MathFloor(reqLots / lotStep) * lotStep), 2);
+      closeLots = NormaliseLots(reqLots, lotStep);
+      if (closeLots <= 0 || closeLots < minLot - LOT_EPS)
+         return StringFormat(
+            "{\"success\":false,\"ticket\":%d,\"error\":\"partial lots below min\","
+            "\"requested_lots\":%s,\"normalised_lots\":%s,\"min_lot\":%s}",
+            ticket, DoubleToString(reqLots, 3),
+            DoubleToString(closeLots, LotDigits(lotStep)),
+            DoubleToString(minLot, LotDigits(lotStep)));
    }
 
    bool result = false;
