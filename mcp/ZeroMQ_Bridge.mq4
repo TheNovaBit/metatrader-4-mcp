@@ -78,7 +78,7 @@ extern bool   EnablePush        = true;       // false = REP-only (no data PUSH)
 // refused.
 extern int    HeartbeatTimeoutSec = 90;       // 0 = off; refuse NEW orders after this many seconds with no ping
 
-datetime g_lastHeartbeat = 0;                 // when the last ping arrived
+uint     g_lastHeartbeatMs = 0;               // GetTickCount() at the last ping (elapsed ms -- see HeartbeatAgeSecs)
 bool     g_hbArmed       = false;             // set by the first ping; never cleared
 bool     g_hbRefusing    = false;             // latch so an episode logs once, not per order
 
@@ -98,6 +98,14 @@ bool     g_repBroken = false;   // set on a failed send; cleared by a successful
 datetime g_repRetryAt = 0;      // next rebind attempt (rate-limited, see RecreateRepSocket)
 
 datetime g_lastPush = 0;
+
+// PUSH back-pressure (TECH_DEBT #39j). SNDHWM is deliberately small -- about
+// six snapshots at ~11 messages each -- so a consumer that stops draining costs
+// DROPPED snapshots (counted, published on the account payload) rather than
+// unbounded memory and, before 2026-09-08, a blocked timer.
+#define PUSH_SNDHWM 64
+long g_pushDropped  = 0;       // messages dropped because the send would have blocked
+bool g_pushDropping = false;   // latch so an episode logs once at each edge
 
 // ---------------------------------------------------------------------------
 // Per-ticket excursion tracking (2026-09-02)
@@ -171,6 +179,8 @@ int OnInit()
    string pushAddr = "tcp://*:" + IntegerToString(DataPushPort);
    string repAddr  = "tcp://*:" + IntegerToString(OrderRepPort);
 
+   // SNDHWM must be set BEFORE bind to apply to the pipes bind creates.
+   g_push.setSendHighWaterMark(PUSH_SNDHWM);
    if (!g_push.bind(pushAddr)) { Print("ZMQ_Bridge: PUSH bind failed on ", pushAddr); return INIT_FAILED; }
    g_push.setLinger(0);
 
@@ -196,8 +206,8 @@ int OnInit()
    // The dead-man contract starts DISARMED on every attach and is armed by the
    // first ping, so a reattach can never inherit a stale clock and refuse the
    // agent's first order.
-   g_lastHeartbeat = 0;
-   g_hbArmed       = false;
+   g_lastHeartbeatMs = 0;
+   g_hbArmed         = false;
    g_hbRefusing    = false;
    if (HeartbeatTimeoutSec > 0)
       Print("ZMQ_Bridge: dead-man heartbeat ready — arms on the first ping, ",
@@ -233,20 +243,24 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
-   // PUSH is gated: a consumer-less PUSH send blocks (mute state) and would
-   // stall this loop before the REP drain. EnablePush=false => pure REP bridge.
+   // A REP socket wedged by a failed send (see g_repBroken) is rebuilt here,
+   // rate-limited, BEFORE the drain so a successful rebind serves this pass.
+   if (g_repBroken) RecreateRepSocket();
+
+   // Drain all pending REP requests without blocking -- FIRST (TECH_DEBT #39j).
+   // Until 2026-09-08 the data push ran ahead of this drain, so command latency
+   // depended on the data path: a blocking PUSH send parked the whole timer and
+   // no close or modify could be served while it waited. The push is now
+   // NOBLOCK (see SendPush) AND behind the drain, so the money path never waits
+   // on the data path.
+   while (ProcessREPOnce()) {}
+
+   // Data push, every UpdateIntervalSec. EnablePush=false => REP-only bridge.
    if (EnablePush && TimeCurrent() - g_lastPush >= UpdateIntervalSec)
    {
       PushAllData();
       g_lastPush = TimeCurrent();
    }
-
-   // A REP socket wedged by a failed send (see g_repBroken) is rebuilt here,
-   // rate-limited, BEFORE the drain so a successful rebind serves this pass.
-   if (g_repBroken) RecreateRepSocket();
-
-   // Drain all pending REP requests without blocking
-   while (ProcessREPOnce()) {}
 
    // Excursion tracking runs LAST, AFTER the REP drain — never before it.
    // MT4 is single-threaded and OnTimer already pushes data before draining the
@@ -426,17 +440,43 @@ void PushAllData()
       if (StringLen(json) > 2)
       {
          ZmqMsg msg(json);
-         g_push.send(msg);
+         SendPush(msg);
       }
    }
 
    string accountJson = BuildAccountJson();
    ZmqMsg accMsg(accountJson);
-   g_push.send(accMsg);
+   SendPush(accMsg);
 
    string posJson = BuildPositionsJson();
    ZmqMsg posMsg(posJson);
-   g_push.send(posMsg);
+   SendPush(posMsg);
+}
+
+// NOBLOCK push (TECH_DEBT #39j). A PUSH socket with no peer, or a peer past
+// the high-water mark, BLOCKS a plain send -- and OnTimer is the only thing
+// serving the order socket. With ZMQ_DONTWAIT the send fails instead: the
+// message is dropped (the next snapshot is UpdateIntervalSec away), counted,
+// and logged once per episode at each edge.
+void SendPush(ZmqMsg &msg)
+{
+   if (g_push.send(msg, true))
+   {
+      if (g_pushDropping)
+      {
+         Print("ZMQ_Bridge: PUSH consumer draining again after ", g_pushDropped,
+               " dropped messages in total");
+         g_pushDropping = false;
+      }
+      return;
+   }
+   g_pushDropped++;
+   if (!g_pushDropping)
+   {
+      Print("ZMQ_Bridge: PUSH send would block (no consumer draining, zmq errno ",
+            Zmq::errorNumber(), ") -- dropping snapshots until it resumes");
+      g_pushDropping = true;
+   }
 }
 
 // ---------------------------------------------------------------------------
@@ -735,7 +775,8 @@ string BuildAccountJson()
    j += JStr("Margin",        DoubleToString(AccountMargin(), 2))         + ",";
    j += JStr("FreeMargin",    DoubleToString(AccountFreeMargin(), 2))     + ",";
    j += JStr("MarginLevel",   DoubleToString(marginLevel, 2))             + ",";
-   j += JStr("Leverage",      IntegerToString(AccountLeverage()));
+   j += JStr("Leverage",      IntegerToString(AccountLeverage()))       + ",";
+   j += JStr("PushDropped",   IntegerToString(g_pushDropped));
    j += "}";
    return j;
 }
@@ -859,12 +900,39 @@ bool HeartbeatFresh()
 {
    if (HeartbeatTimeoutSec <= 0) return true;   // disabled
    if (!g_hbArmed)               return true;   // this consumer never pings
-   return (TimeCurrent() - g_lastHeartbeat) <= HeartbeatTimeoutSec;
+   return HeartbeatAgeSecs() <= HeartbeatTimeoutSec;
+}
+
+// Seconds since the last ping on the ELAPSED clock (TECH_DEBT #39a). The
+// original compared TimeCurrent(), which is the time of the last TICK on any
+// symbol, so the window was measured in market activity rather than seconds
+// and a quiet market kept a stale ping "fresh". GetTickCount() is milliseconds
+// since boot; the unsigned subtraction survives its 49.7-day wrap.
+int HeartbeatAgeSecs()
+{
+   uint elapsed = GetTickCount() - g_lastHeartbeatMs;
+   return (int)(elapsed / 1000);
 }
 
 string ProcessCommand(string cmd)
 {
    string action = ExtractJsonValue(cmd, "cmd");
+
+   // Account identity (TECH_DEBT #39e, EA half). Every agent command carries
+   // the account it believes it is talking to; a terminal re-logged into a
+   // different account refuses everything except the ping, which reports the
+   // real number so the agent's own check can see it. An absent field is an
+   // older client and is not checked.
+   string expAcct = ExtractJsonValue(cmd, "expected_account");
+   if (action != "ping" && StringLen(expAcct) > 0 &&
+       (int)StringToInteger(expAcct) != AccountNumber())
+   {
+      Print("ZMQ_Bridge: REFUSED ", action, " -- payload expects account ", expAcct,
+            " but this terminal is logged into ", AccountNumber());
+      return StringFormat(
+         "{\"success\":false,\"error\":\"wrong account\",\"account\":%d,\"expected\":%d}",
+         AccountNumber(), (int)StringToInteger(expAcct));
+   }
 
    if (action == "ping")
    {
@@ -876,14 +944,17 @@ string ProcessCommand(string cmd)
          Print("ZMQ_Bridge: dead-man heartbeat ARMED (timeout ",
                HeartbeatTimeoutSec, "s) — new orders will be refused after that ",
                "long without a ping");
-      g_hbArmed       = true;
-      g_lastHeartbeat = TimeCurrent();
+      g_hbArmed         = true;
+      g_lastHeartbeatMs = GetTickCount();
       if (g_hbRefusing)
       {
          Print("ZMQ_Bridge: heartbeat restored — new orders accepted again");
          g_hbRefusing = false;
       }
-      return "{\"success\":true,\"type\":\"pong\"}";
+      // The pong names the account so the agent's per-cycle identity check
+      // (TECH_DEBT #39e) can read it even when the data feed is down.
+      return StringFormat("{\"success\":true,\"type\":\"pong\",\"account\":%d}",
+                          AccountNumber());
    }
 
    if (action == "place_order")
@@ -897,14 +968,14 @@ string ProcessCommand(string cmd)
          if (!g_hbRefusing)
          {
             Print("ZMQ_Bridge: DEAD-MAN TRIPPED — no heartbeat for ",
-                  (int)(TimeCurrent() - g_lastHeartbeat), "s (limit ",
+                  HeartbeatAgeSecs(), "s (limit ",
                   HeartbeatTimeoutSec, "s). Refusing new orders; close/modify ",
                   "still served.");
             g_hbRefusing = true;
          }
          return StringFormat(
             "{\"success\":false,\"error\":\"dead-man: no heartbeat for %ds (limit %ds)\"}",
-            (int)(TimeCurrent() - g_lastHeartbeat), HeartbeatTimeoutSec);
+            HeartbeatAgeSecs(), HeartbeatTimeoutSec);
       }
       return HandlePlaceOrder(cmd);
    }
@@ -919,6 +990,25 @@ string ProcessCommand(string cmd)
       return HandleHistory(cmd);
 
    return StringFormat("{\"success\":false,\"error\":\"unknown cmd: %s\"}", action);
+}
+
+// ---------------------------------------------------------------------------
+// Ownership (TECH_DEBT #39f). Until 2026-09-08 close and modify acted on ANY
+// ticket OrderSelect returned, so every protection for a position this bridge
+// did not open lived in the agent's `_may_touch` alone. The selected order must
+// carry this EA's MagicNumber input; returns "" when it does, else the JSON
+// error the handler returns as-is. Call immediately after a successful
+// OrderSelect -- it reads the selected order.
+// ---------------------------------------------------------------------------
+
+string RefuseIfNotOwned(int ticket)
+{
+   if (OrderMagicNumber() == MagicNumber) return "";
+   Print("ZMQ_Bridge: REFUSED ticket ", ticket, " -- magic ", OrderMagicNumber(),
+         " is not this bridge's ", MagicNumber);
+   return StringFormat(
+      "{\"success\":false,\"ticket\":%d,\"error\":\"not owned\",\"magic\":%d,\"expected_magic\":%d}",
+      ticket, OrderMagicNumber(), MagicNumber);
 }
 
 // ---------------------------------------------------------------------------
@@ -968,6 +1058,50 @@ string HandlePlaceOrder(string cmd)
    int    slippage  = StringLen(slipStr) > 0 ? (int)StringToInteger(slipStr) : 10;
    string magicStr  = ExtractJsonValue(cmd, "magic_number");
    int    magic     = StringLen(magicStr) > 0 ? (int)StringToInteger(magicStr) : MagicNumber;
+
+   // Ownership (TECH_DEBT #39f): the magic an order is placed with must be
+   // THIS bridge's input, never whatever the payload says. A client sending a
+   // different magic is talking to the wrong bridge (the primary and manual
+   // agents differ by magic AND port), and an order tagged with a foreign magic
+   // could never be closed through this EA again once HandleClose checks it.
+   if (StringLen(magicStr) > 0 && magic != MagicNumber)
+   {
+      Print("ZMQ_Bridge: REFUSED ", operation, " ", symbol, " -- payload magic ", magic,
+            " is not this bridge's ", MagicNumber);
+      return StringFormat(
+         "{\"success\":false,\"error\":\"magic mismatch\",\"magic\":%d,\"expected_magic\":%d}",
+         magic, MagicNumber);
+   }
+
+   // Per-order deadline (TECH_DEBT #39a). ZMQ keeps accepting messages while
+   // this thread is stalled, so an order whose reply already timed out on the
+   // agent can sit in the inbound queue behind the agent's pings; when the
+   // drain resumes the pings renew the dead-man FIRST and the order then
+   // executes, minutes stale, on a quote the agent abandoned. The heartbeat
+   // cannot see that -- the message renewing the clock precedes the order in
+   // the same queue -- so each order carries its own deadline. TimeGMT() and
+   // the agent's time.time() read the same box clock. Absent fields = older
+   // client, no check.
+   string sentStr = ExtractJsonValue(cmd, "sent_at_utc");
+   string ageStr  = ExtractJsonValue(cmd, "max_age_secs");
+   if (StringLen(sentStr) > 0 && StringLen(ageStr) > 0)
+   {
+      long sentAt = StringToInteger(sentStr);
+      long maxAge = StringToInteger(ageStr);
+      if (sentAt > 0 && maxAge > 0)
+      {
+         long age = (long)TimeGMT() - sentAt;
+         if (age > maxAge)
+         {
+            Print("ZMQ_Bridge: REFUSED ", operation, " ", symbol, " -- order is ", age,
+                  "s old (limit ", maxAge, "s); it sat in the queue past its deadline");
+            return StringFormat(
+               "{\"success\":false,\"error\":\"order expired\",\"age_secs\":%d,"
+               "\"max_age_secs\":%d,\"symbol\":\"%s\",\"operation\":\"%s\"}",
+               (int)age, (int)maxAge, symbol, operation);
+         }
+      }
+   }
 
    if (!IsTradeAllowed())
       return "{\"success\":false,\"error\":\"AutoTrading disabled\"}";
@@ -1107,6 +1241,8 @@ string HandleClose(string cmd)
 
    if (!OrderSelect(ticket, SELECT_BY_TICKET))
       return StringFormat("{\"success\":false,\"ticket\":%d,\"error\":\"not found\"}", ticket);
+   string owned = RefuseIfNotOwned(ticket);
+   if (StringLen(owned) > 0) return owned;
 
    double closePrice = 0;
    double closeLots  = OrderLots();
@@ -1164,6 +1300,8 @@ string HandleModify(string cmd)
 
    if (!OrderSelect(ticket, SELECT_BY_TICKET))
       return StringFormat("{\"success\":false,\"ticket\":%d,\"error\":\"not found\"}", ticket);
+   string owned = RefuseIfNotOwned(ticket);
+   if (StringLen(owned) > 0) return owned;
 
    bool ok = OrderModify(ticket, OrderOpenPrice(), sl, tp, 0, clrNONE);
    if (ok)
