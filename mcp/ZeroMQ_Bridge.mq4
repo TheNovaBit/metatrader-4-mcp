@@ -843,6 +843,13 @@ string BuildPositionsJson()
       positions += JStr("MaxPrice",     max_price)                               + ",";
       positions += JStr("MinPrice",     min_price)                               + ",";
       positions += JStr("TrackedSince", trk_since)                               + ",";
+      // TECH_DEBT #26. The agent's close/modify allowlist (scalper_guards guard 4)
+      // has always enforced magic when the key is present and SKIPPED it when
+      // absent -- so the check has been dormant since the guard shipped, because
+      // this payload never carried it. Emitting it here ARMS that guard, and the
+      // agent then refuses a position whose magic is not its own even when our
+      // comment prefix and shadow map both say it is ours.
+      positions += JStr("MagicNumber",  IntegerToString(OrderMagicNumber()))     + ",";
       positions += JStr("Comment",      OrderComment());
       positions += "}";
    }
